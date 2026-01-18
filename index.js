@@ -13,7 +13,7 @@ const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const n8nWebhook = process.env.N8N_WEBHOOK;
 
-// Full memory like your YML context_memory
+// Memory per call (full YML context)
 const conversationMemory = {};
 
 app.post('/voice', async (req, res) => {
@@ -40,29 +40,29 @@ app.post('/voice', async (req, res) => {
   }
   const memory = conversationMemory[callSid];
 
-  // OpenAI prompt — matches your YML flow exactly
+  // OpenAI with full YML flow
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
-      { role: "system", content: `You are a friendly CPA receptionist for Ahad and Co CPA Firm. Follow this exact flow from Retell YML:
+      { role: "system", content: `You are a friendly CPA receptionist for Ahad and Co CPA Firm. Follow this exact flow:
 
-      - Greet: "Thanks for calling Ahad and Co CPA Firm. How can I help you today?" (speak naturally, professional pace)
+      - Greet: "Thanks for calling Ahad and Co CPA Firm. How can I help you today?" (natural pace)
 
-      - Intent handling:
-        - Returning client: "Welcome back. I see you're a returning client." → store previous_client=Yes, skip_referral_question=Yes → booking
-        - Appointment request: "Great. Let's schedule a free 15-minute consultation." → booking
-        - Personal tax / individual tax: "We'd love to help with that. Let's schedule a free 15-minute consultation." → booking
-        - Business tax / business accounting: "We can help. Let's schedule a free 15-minute consultation." → booking
+      - Intents:
+        - Returning client: "Welcome back. I see you're a returning client." → previous_client=Yes, skip referral → booking
+        - Appointment/consultation: "Great. Let's schedule a free 15-minute consultation." → booking
+        - Personal tax/individual tax: "We'd love to help with that. Let's schedule a free 15-minute consultation." → booking
+        - Business tax/business accounting: "We can help. Let's schedule a free 15-minute consultation." → booking
         - Specific person: "Unfortunately no one is available currently. Would you like to make an appointment?" → booking or message
         - Default: "I can book a free consultation. Would you like to schedule?" → booking or message
 
-      - Booking flow:
+      - Booking:
         - Check earliest slot.
-        - Collect first_name: "May I have your first name? Please spell it out slowly and clearly."
-        - Collect last_name: same
-        - Collect email: "What is your email address? Please spell it out very slowly, one letter at a time, pause after each letter." → repeat full email slowly → confirm once
-        - Collect phone: "And your phone number?"
-        - Previous client: "Have you used Ahad and Co before?" (only ask once)
+        - First name: "May I have your first name? Please spell it out slowly and clearly."
+        - Last name: same
+        - Email: "What is your email address? Please spell it out very slowly, one letter at a time." → repeat full email slowly → confirm once
+        - Phone: "And your phone number?"
+        - Previous client: "Have you used Ahad and Co before?" (once only)
         - Referral: "How did you hear about us?" (skip if previous_client=Yes)
         - Call reason: "What's the main reason for your call?"
 
@@ -70,14 +70,14 @@ app.post('/voice', async (req, res) => {
       - Send to n8n on booking.
       - End with one "Goodbye" — stop conversation.
 
-      Remember context: do not repeat questions. Speak slowly for spelling. Never repeat "Goodbye".` },
+      Remember context: do not repeat questions. Speak slowly for spelling.` },
       { role: "user", content: userSpeech || "start" },
       { role: "assistant", content: `Current memory: ${JSON.stringify(memory)}` }
     ],
   });
   let agentText = completion.choices[0].message.content.trim();
 
-  // Update memory from LLM response
+  // Update memory
   if (agentText.toLowerCase().includes("previous client")) memory.previous_client = agentText.includes("Yes") ? "Yes" : "No";
   if (memory.previous_client === "Yes") memory.skip_referral_question = true;
   if (agentText.toLowerCase().includes("referral")) memory.referral_source = agentText.match(/referral: (.*)/)?.[1] || null;
@@ -87,23 +87,28 @@ app.post('/voice', async (req, res) => {
   if (agentText.toLowerCase().includes("phone")) memory.phone = agentText.match(/phone: (.*)/)?.[1] || null;
   if (agentText.toLowerCase().includes("reason")) memory.call_reason = agentText.match(/reason: (.*)/)?.[1] || null;
 
-  // ElevenLabs TTS (Grace voice, slow & clear)
-  const audioStream = await elevenlabs.generate({
-    voice: process.env.ELEVENLABS_VOICE_ID,
-    text: agentText,
-    model_id: "eleven_multilingual_v2",
-  });
+  try {
+    // ElevenLabs TTS
+    const audioStream = await elevenlabs.generate({
+      voice: process.env.ELEVENLABS_VOICE_ID,
+      text: agentText,
+      model_id: "eleven_multilingual_v2",
+    });
 
-  // Upload audio to tmpfiles.org for public MP3 URL
-  const formData = new FormData();
-  formData.append('file', audioStream, 'audio.mp3');
-  const uploadResponse = await axios.post('https://tmpfiles.org/api/v1/upload', formData, {
-    headers: formData.getHeaders()
-  });
-  const audioUrl = uploadResponse.data.files.file.url.full; // Public URL
+    // Upload to tmpfiles.org for public MP3 URL
+    const formData = new FormData();
+    formData.append('file', audioStream, 'audio.mp3');
+    const uploadResponse = await axios.post('https://tmpfiles.org/api/v1/upload', formData, {
+      headers: formData.getHeaders()
+    });
+    const audioUrl = uploadResponse.data.files.file.url.full;
 
-  // Play audio to caller
-  twiml.play({ url: audioUrl });
+    // Play audio
+    twiml.play({ url: audioUrl });
+  } catch (e) {
+    // Fallback if ElevenLabs fails
+    twiml.say({ voice: "Polly.Joanna-Neural", language: "en-US", rate: "slow" }, agentText);
+  }
 
   // Send to n8n if booked
   if (agentText.toLowerCase().includes("booked")) {
@@ -124,7 +129,7 @@ app.post('/voice', async (req, res) => {
     });
   }
 
-  // End call if ended
+  // End call
   if (agentText.toLowerCase().includes("goodbye")) memory.conversation_ended = true;
 
   res.type('text/xml');
