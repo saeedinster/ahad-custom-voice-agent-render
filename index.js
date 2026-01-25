@@ -57,33 +57,38 @@ app.post('/voice', async (req, res) => {
   let agentText = "Sorry, I'm having a technical issue. Please try again later. Goodbye.";
 
   try {
+    // Determine what to ask next
+    let nextQuestion = '';
+    if (!memory.first_name) {
+      nextQuestion = 'May I have your first name?';
+    } else if (!memory.last_name) {
+      nextQuestion = 'And your last name?';
+    } else if (!memory.email) {
+      nextQuestion = "What's your email address?";
+    } else if (!memory.phone) {
+      nextQuestion = 'And your phone number?';
+    } else if (!memory.previous_client) {
+      nextQuestion = 'Have you worked with Ahad and Co before?';
+    } else if (memory.previous_client === 'No' && !memory.referral_source) {
+      nextQuestion = 'How did you hear about us?';
+    } else if (!memory.call_reason) {
+      nextQuestion = "What's the main reason for your call?";
+    } else {
+      nextQuestion = "Perfect! You're all set. You'll receive confirmation shortly. Thank you for calling Ahad and Co. Goodbye!";
+    }
+
     // Build conversation history
     const messages = [
       {
         role: "system",
-        content: `You are a friendly receptionist for Ahad and Co CPA Firm.
+        content: `You are a receptionist for Ahad and Co CPA Firm.
 
-STRICT COLLECTION ORDER - Ask ONE question at a time:
-
-${!memory.first_name ? '→ NOW: Ask "May I have your first name?"' : '✓ First name: ' + memory.first_name}
-${memory.first_name && !memory.last_name ? '→ NOW: Ask "And your last name?"' : memory.last_name ? '✓ Last name: ' + memory.last_name : ''}
-${memory.last_name && !memory.email ? '→ NOW: Ask "What\'s your email address?"' : memory.email ? '✓ Email: ' + memory.email : ''}
-${memory.email && !memory.phone ? '→ NOW: Ask "And your phone number?"' : memory.phone ? '✓ Phone: ' + memory.phone : ''}
-${memory.phone && !memory.previous_client ? '→ NOW: Ask "Have you worked with Ahad and Co before?"' : memory.previous_client ? '✓ Previous client: ' + memory.previous_client : ''}
-${memory.previous_client === 'No' && !memory.referral_source ? '→ NOW: Ask "How did you hear about us?"' : memory.referral_source ? '✓ Referral: ' + memory.referral_source : ''}
-${(memory.previous_client === 'Yes' || memory.referral_source) && !memory.call_reason ? '→ NOW: Ask "What\'s the main reason for your call?"' : memory.call_reason ? '✓ Reason: ' + memory.call_reason : ''}
-${memory.first_name && memory.last_name && memory.email && memory.phone && memory.previous_client && memory.call_reason ? '→ NOW: Say "Perfect! You\'re all set. You\'ll receive confirmation shortly. Thank you for calling Ahad and Co. Goodbye!"' : ''}
-
-CRITICAL RULES:
-- If first call (history is empty): Start with "Thanks for calling Ahad and Co CPA Firm." then ask first question
-- Ask ONLY the next question marked with →
-- Keep responses under 10 words
-- NO confirmations like "Just to confirm" or "Is that correct?"
-- NO repeating user input back to them
-- If user tries to give multiple fields at once, just take the answer to YOUR current question
-- NEVER say "Goodbye" more than once
-
-Current conversation: ${memory.history.length} exchanges`
+STRICT INSTRUCTIONS:
+- If this is the first message (no history), say: "Thanks for calling Ahad and Co CPA Firm. ${nextQuestion}"
+- Otherwise, say EXACTLY: "${nextQuestion}"
+- Do NOT add anything else
+- Do NOT say "thank you" or repeat what the user said
+- JUST ask the question`
       }
     ];
 
@@ -140,23 +145,38 @@ Current conversation: ${memory.history.length} exchanges`
       // Extract based ONLY on current step
       switch (memory.step) {
         case 'collect_first_name':
-          memory.first_name = userSpeech.trim();
+          // Try to extract just the name (remove filler words)
+          let firstName = userSpeech.trim();
+          // Remove common prefixes
+          firstName = firstName.replace(/^(yeah|yes|my first name is|my name is|it's|i'm|this is)\s*/i, '');
+          firstName = firstName.replace(/\s+/g, ' ').trim();
+          memory.first_name = firstName;
           console.log(`[${callSid}] Captured first_name: ${memory.first_name}`);
           break;
 
         case 'collect_last_name':
-          memory.last_name = userSpeech.trim();
+          // Try to extract just the name
+          let lastName = userSpeech.trim();
+          lastName = lastName.replace(/^(yeah|yes|my last name is|my surname is|it's|and|the last name is)\s*/i, '');
+          lastName = lastName.replace(/\s+/g, ' ').trim();
+          memory.last_name = lastName;
           console.log(`[${callSid}] Captured last_name: ${memory.last_name}`);
           break;
 
         case 'collect_email':
-          // Clean up email - remove spaces, keep @ and dots
-          memory.email = userSpeech.replace(/\s+/g, '').toLowerCase();
+          // Clean up email - remove spaces and common prefixes
+          let email = userSpeech.toLowerCase();
+          email = email.replace(/^(my email is|my email address is|it's|it is|the email is)\s*/i, '');
+          email = email.replace(/\s+/g, '');
+          // Replace common words
+          email = email.replace(/\bat\b/g, '@');
+          email = email.replace(/\bdot\b/g, '.');
+          memory.email = email;
           console.log(`[${callSid}] Captured email: ${memory.email}`);
           break;
 
         case 'collect_phone':
-          // Extract only digits
+          // Extract only digits from phone
           memory.phone = userSpeech.replace(/\D/g, '');
           console.log(`[${callSid}] Captured phone: ${memory.phone}`);
           break;
