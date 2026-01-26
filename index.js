@@ -398,11 +398,23 @@ app.post('/voice', async (req, res) => {
 
       // ===== OFFICE HOURS FLOW =====
       else if (memory.flow_state === 'office_hours_message') {
-        if (/yes|yeah|sure|ok/i.test(lowerSpeech)) {
+        // Check if user wants to leave a message
+        if (/yes|yeah|sure|ok|message|please/i.test(lowerSpeech)) {
           memory.flow_state = 'message_first_name';
-        } else {
+        }
+        // Check if user is declining or wants to call back
+        else if (/no|nope|not|call back|later/i.test(lowerSpeech)) {
           memory.flow_state = 'office_hours_declined';
           memory.conversation_ended = true;
+        }
+        // If user repeats "speak to someone", re-explain and ask again
+        else if (/(speak|talk) (to|with)|someone|person/i.test(lowerSpeech)) {
+          // Stay in office_hours_message state to ask again
+          memory.flow_state = 'office_hours_message';
+        }
+        // Default: assume they want to leave a message if unclear
+        else {
+          memory.flow_state = 'message_first_name';
         }
       }
 
