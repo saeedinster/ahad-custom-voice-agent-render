@@ -117,7 +117,7 @@ async function createCalComBooking(slotISO, userInfo) {
 function detectSlotAcceptance(speech, offeredSlots) {
   if (!offeredSlots || offeredSlots.length === 0) return null;
 
-  const lower = speech.toLowerCase();
+  const lower = speech.toLowerCase().trim();
 
   // Check for specific slot selection
   if (/(first|1|one)/i.test(lower) && offeredSlots[0]) return offeredSlots[0];
@@ -126,9 +126,15 @@ function detectSlotAcceptance(speech, offeredSlots) {
   if (/(fourth|4|four)/i.test(lower) && offeredSlots[3]) return offeredSlots[3];
   if (/(fifth|5|five)/i.test(lower) && offeredSlots[4]) return offeredSlots[4];
 
-  // Generic acceptance - default to first slot
-  if (/^(yes|yeah|sure|ok|okay|that works|sounds good|perfect)/i.test(lower.trim())) {
+  // Generic acceptance patterns (more flexible - can appear anywhere in response)
+  // Includes patterns like "Okay. Yes, it can." or "Yes that works" or "Sure"
+  if (/(^|\s)(yes|yeah|sure|ok|okay|that works|sounds good|perfect|works for me|either|both|any)($|[\s.,!])/i.test(lower)) {
     return offeredSlots[0];
+  }
+
+  // Check for explicit rejection to avoid false positives
+  if (/(no|nope|not|don't|none|neither)/i.test(lower)) {
+    return null;
   }
 
   return null;
@@ -159,25 +165,54 @@ function detectIntentByKeywords(speech) {
 // Extract name from speech (improved)
 function extractName(speech) {
   let name = speech.trim();
-  // Remove common prefixes
-  name = name.replace(/^(yeah|yes|my (first|last) name is|my name is|it's|i'm|this is|the name is)\s*/i, '');
+
+  // Remove common conversation prefixes (including comma-separated ones)
+  name = name.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?)\s*/i, '');
+
+  // Remove "my name is" patterns
+  name = name.replace(/^(my (first|last) name is|my name is|it's|i'm|this is|the name is)\s*/i, '');
+
   // Remove trailing punctuation
   name = name.replace(/[.,!?]$/g, '');
+
   // Clean up extra spaces
   name = name.replace(/\s+/g, ' ').trim();
+
+  // If it's still a full sentence or question, return empty (invalid)
+  if (name.split(' ').length > 3 || /\?/.test(name)) {
+    console.log(`Invalid name detected: "${name}" - too long or contains question mark`);
+    return '';
+  }
+
   return name;
 }
 
 // Extract email from speech (improved)
 function extractEmail(speech) {
-  let email = speech.toLowerCase();
-  // Remove common prefixes
+  let email = speech.toLowerCase().trim();
+
+  // Remove conversation prefixes
+  email = email.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?)\s*/i, '');
+
+  // Remove common email prefixes
   email = email.replace(/^(my email( address)? is|it's|the email is)\s*/i, '');
+
   // Remove all spaces
   email = email.replace(/\s+/g, '');
+
   // Convert speech to email format
   email = email.replace(/\bat\b/g, '@');
   email = email.replace(/\bdot\b/g, '.');
+
+  // Remove any remaining periods from sentences
+  email = email.replace(/\.+$/g, '');
+
+  // Validate: must contain @ and at least one dot after @
+  if (!/@/.test(email) || !email.match(/@.+\./)) {
+    console.log(`Invalid email detected: "${email}" - missing @ or domain`);
+    return '';
+  }
+
   return email;
 }
 
@@ -370,6 +405,20 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'office_hours_message';
         } else if (memory.intent === 'appointment') {
           memory.flow_state = 'calendar_check';
+
+          // Immediately check calendar availability
+          const startDate = new Date();
+          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
+          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
+
+          if (slots && slots.length > 0) {
+            memory.offered_slots = slots;
+            memory.flow_state = 'offer_slots';
+            console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
+          } else {
+            console.log(`[${callSid}] No calendar availability, switching to message flow`);
+            memory.flow_state = 'message_first_name';
+          }
         } else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
         } else {
@@ -387,12 +436,40 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'office_hours_message';
         } else if (memory.intent === 'appointment') {
           memory.flow_state = 'calendar_check';
+
+          // Immediately check calendar availability
+          const startDate = new Date();
+          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
+          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
+
+          if (slots && slots.length > 0) {
+            memory.offered_slots = slots;
+            memory.flow_state = 'offer_slots';
+            console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
+          } else {
+            console.log(`[${callSid}] No calendar availability, switching to message flow`);
+            memory.flow_state = 'message_first_name';
+          }
         } else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
         } else {
           // Still unclear, default to appointment
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+
+          // Immediately check calendar availability
+          const startDate = new Date();
+          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
+          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
+
+          if (slots && slots.length > 0) {
+            memory.offered_slots = slots;
+            memory.flow_state = 'offer_slots';
+            console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
+          } else {
+            console.log(`[${callSid}] No calendar availability, switching to message flow`);
+            memory.flow_state = 'message_first_name';
+          }
         }
       }
 
@@ -465,27 +542,48 @@ app.post('/voice', async (req, res) => {
 
       // ===== APPOINTMENT DATA COLLECTION =====
       else if (memory.flow_state === 'appointment_first_name') {
-        memory.first_name = extractName(userSpeech);
-        memory.flow_state = 'appointment_last_name';
-        console.log(`[${callSid}] Appointment first_name: ${memory.first_name}`);
+        const extracted = extractName(userSpeech);
+        if (extracted && extracted.length > 0) {
+          memory.first_name = extracted;
+          memory.flow_state = 'appointment_last_name';
+          console.log(`[${callSid}] Appointment first_name: ${memory.first_name}`);
+        } else {
+          console.log(`[${callSid}] Invalid first name, staying in same state`);
+          // Stay in appointment_first_name state to ask again
+        }
       }
 
       else if (memory.flow_state === 'appointment_last_name') {
-        memory.last_name = extractName(userSpeech);
-        memory.flow_state = 'appointment_email';
-        console.log(`[${callSid}] Appointment last_name: ${memory.last_name}`);
+        const extracted = extractName(userSpeech);
+        if (extracted && extracted.length > 0) {
+          memory.last_name = extracted;
+          memory.flow_state = 'appointment_email';
+          console.log(`[${callSid}] Appointment last_name: ${memory.last_name}`);
+        } else {
+          console.log(`[${callSid}] Invalid last name, staying in same state`);
+        }
       }
 
       else if (memory.flow_state === 'appointment_email') {
-        memory.email = extractEmail(userSpeech);
-        memory.flow_state = 'appointment_phone';
-        console.log(`[${callSid}] Appointment email: ${memory.email}`);
+        const extracted = extractEmail(userSpeech);
+        if (extracted && extracted.length > 0) {
+          memory.email = extracted;
+          memory.flow_state = 'appointment_phone';
+          console.log(`[${callSid}] Appointment email: ${memory.email}`);
+        } else {
+          console.log(`[${callSid}] Invalid email, staying in same state`);
+        }
       }
 
       else if (memory.flow_state === 'appointment_phone') {
-        memory.phone = userSpeech.replace(/\D/g, '');
-        memory.flow_state = 'appointment_previous_client';
-        console.log(`[${callSid}] Appointment phone: ${memory.phone}`);
+        const extracted = userSpeech.replace(/\D/g, '');
+        if (extracted && extracted.length >= 10) {
+          memory.phone = extracted;
+          memory.flow_state = 'appointment_previous_client';
+          console.log(`[${callSid}] Appointment phone: ${memory.phone}`);
+        } else {
+          console.log(`[${callSid}] Invalid phone (need at least 10 digits), staying in same state`);
+        }
       }
 
       else if (memory.flow_state === 'appointment_previous_client') {
@@ -513,33 +611,59 @@ app.post('/voice', async (req, res) => {
 
       // ===== MESSAGE DATA COLLECTION =====
       else if (memory.flow_state === 'message_first_name' || memory.flow_state === 'message_fallback_intro') {
-        memory.first_name = extractName(userSpeech);
-        memory.flow_state = 'message_last_name';
-        console.log(`[${callSid}] Message first_name: ${memory.first_name}`);
+        const extracted = extractName(userSpeech);
+        if (extracted && extracted.length > 0) {
+          memory.first_name = extracted;
+          memory.flow_state = 'message_last_name';
+          console.log(`[${callSid}] Message first_name: ${memory.first_name}`);
+        } else {
+          console.log(`[${callSid}] Invalid first name, staying in same state`);
+          memory.flow_state = 'message_first_name'; // Explicitly stay in same state
+        }
       }
 
       else if (memory.flow_state === 'message_last_name') {
-        memory.last_name = extractName(userSpeech);
-        memory.flow_state = 'message_phone';
-        console.log(`[${callSid}] Message last_name: ${memory.last_name}`);
+        const extracted = extractName(userSpeech);
+        if (extracted && extracted.length > 0) {
+          memory.last_name = extracted;
+          memory.flow_state = 'message_phone';
+          console.log(`[${callSid}] Message last_name: ${memory.last_name}`);
+        } else {
+          console.log(`[${callSid}] Invalid last name, staying in same state`);
+        }
       }
 
       else if (memory.flow_state === 'message_phone') {
-        memory.phone = userSpeech.replace(/\D/g, '');
-        memory.flow_state = 'message_email';
-        console.log(`[${callSid}] Message phone: ${memory.phone}`);
+        const extracted = userSpeech.replace(/\D/g, '');
+        if (extracted && extracted.length >= 10) {
+          memory.phone = extracted;
+          memory.flow_state = 'message_email';
+          console.log(`[${callSid}] Message phone: ${memory.phone}`);
+        } else {
+          console.log(`[${callSid}] Invalid phone (need at least 10 digits), staying in same state`);
+        }
       }
 
       else if (memory.flow_state === 'message_email') {
-        memory.email = extractEmail(userSpeech);
-        memory.flow_state = 'message_content';
-        console.log(`[${callSid}] Message email: ${memory.email}`);
+        const extracted = extractEmail(userSpeech);
+        if (extracted && extracted.length > 0) {
+          memory.email = extracted;
+          memory.flow_state = 'message_content';
+          console.log(`[${callSid}] Message email: ${memory.email}`);
+        } else {
+          console.log(`[${callSid}] Invalid email, staying in same state`);
+        }
       }
 
       else if (memory.flow_state === 'message_content') {
-        memory.message_content = userSpeech.trim();
-        memory.flow_state = 'message_complete';
-        console.log(`[${callSid}] Message content: ${memory.message_content}`);
+        const extracted = userSpeech.trim();
+        if (extracted && extracted.length > 2) {
+          memory.message_content = extracted;
+          memory.flow_state = 'message_complete';
+          console.log(`[${callSid}] Message content: ${memory.message_content}`);
+        } else {
+          console.log(`[${callSid}] Message too short, staying in same state`);
+        }
       }
     }
 
