@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nImplement multi-intent voice agent with calendar integration\n\nMajor Features Added:\n- Intent detection using OpenAI function calling + keyword fallback\n- Cal.com API integration for real-time calendar availability\n- Multi-path conversation flows \\(appointment, message, speak to person\\)\n- Slot negotiation with 3-attempt limit and message fallback\n- Dual webhook payloads \\(appointment_booking vs message\\)\n- Improved data extraction to remove filler words\n\nChanges:\n- Added Cal.com helper functions \\(getCalendarAvailability, createCalComBooking, detectSlotAcceptance\\)\n- Expanded memory structure to support multi-intent flows\n- Built context-aware system prompt builder\n- Replaced linear state machine with flow_state-based routing\n- Updated webhook logic for both appointment and message types\n- Added intent clarification handling\n- Updated .env.example and render.yaml with Cal.com config\n- Changed n8n webhook URL to production endpoint\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nUpdate n8n webhook URL to correct production endpoint\n\nChanged webhook URL from:\nhttps://ahadandco.app.n8n.cloud/webhook/ahad\n\nTo correct production URL:\nhttps://scottde.app.n8n.cloud/webhook/TestAhadCPA\n\nFiles updated:\n- index.js: Default webhook URL\n- .env.example: Example configuration\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
