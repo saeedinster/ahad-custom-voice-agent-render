@@ -17,3 +17,9 @@ services:
         sync: false
       - key: N8N_WEBHOOK_URL
         sync: false
+      - key: CALCOM_API_KEY
+        sync: false
+      - key: CALCOM_EVENT_TYPE_ID
+        sync: false
+      - key: CALCOM_TIMEZONE
+        value: America/New_York
