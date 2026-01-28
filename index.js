@@ -227,13 +227,13 @@ function buildSystemPrompt(memory) {
   const baseContext = "You are a professional receptionist for Ahad and Co CPA Firm.";
 
   const statePrompts = {
-    greeting: `${baseContext}\nIf this is the FIRST message (no history), say EXACTLY: "Thanks for calling Ahad and Co. How can I help you today?"\nOtherwise, say: "How can I help you today?"`,
+    greeting: `${baseContext}\nIf this is the FIRST message (no history), say EXACTLY: "Thanks for calling Ahad and Co CPA Firm. How can I help you today?"\nOtherwise, say: "How can I help you today?"`,
 
     intent_clarification: `${baseContext}\nThe caller's intent is unclear. Ask politely:\n"I'd be happy to help. Are you looking to schedule an appointment, leave a message, or speak with someone?"`,
 
-    office_hours_message: `${baseContext}\nSay: "No one is available right now. Our office hours are Tuesday through Friday, 11:00 AM to 6:00 PM. You can call back during business hours, or I can take a message for you. Would you like to leave a message?"`,
+    office_hours_message: `${baseContext}\nSay EXACTLY: "No one is available now. Our office hours are Monday-Friday, 10:00 AM to 6:00 PM. Please call back if you want to talk to someone, or you can leave a message. Do you want to leave a message?"`,
 
-    office_hours_declined: `${baseContext}\nSay: "No problem. Please call us back during business hours, Tuesday through Friday, 11 AM to 6 PM. Have a great day! Goodbye."`,
+    office_hours_declined: `${baseContext}\nSay: "Thanks for calling. Goodbye."`,
 
     calendar_check: `${baseContext}\nSay: "Let me check our calendar for available times. One moment please."`,
 
@@ -262,8 +262,9 @@ function buildSystemPrompt(memory) {
     message_last_name: `${baseContext}\nSay: "And your last name?"`,
     message_phone: `${baseContext}\nSay: "What's the best phone number to reach you?"`,
     message_email: `${baseContext}\nSay: "And your email address?"`,
-    message_content: `${baseContext}\nSay: "What message would you like to leave?"`,
-    message_complete: `${baseContext}\nSay: "Thank you, ${memory.first_name}. Someone from our team will call you back shortly. Have a great day! Goodbye."`
+    message_content: `${baseContext}\nSay: "What is the reason for your call?"`,
+    message_confirm: `${baseContext}\nSay: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}. Is that correct?"`,
+    message_complete: `${baseContext}\nSay EXACTLY: "I will have someone call you back as soon as the office opens. Thanks for calling. Goodbye."`
   };
 
   return {
@@ -538,7 +539,7 @@ app.post('/voice', async (req, res) => {
           memory.slot_offer_attempt++;
           console.log(`[${callSid}] Slot rejected (attempt ${memory.slot_offer_attempt}/3)`);
 
-          if (memory.slot_offer_attempt >= 3) {
+          if (memory.slot_offer_attempt >= 4) {
             memory.flow_state = 'message_fallback_intro';
           } else {
             memory.flow_state = 'ask_preferred_time';
@@ -737,10 +738,29 @@ app.post('/voice', async (req, res) => {
         const extracted = userSpeech.trim();
         if (extracted && extracted.length > 2) {
           memory.message_content = extracted;
-          memory.flow_state = 'message_complete';
+          memory.flow_state = 'message_confirm';
           console.log(`[${callSid}] Message content: ${memory.message_content}`);
         } else {
           console.log(`[${callSid}] Message too short, staying in same state`);
+        }
+      }
+
+      else if (memory.flow_state === 'message_confirm') {
+        // Check if user confirms
+        if (/yes|yeah|correct|right|yep/i.test(lowerSpeech)) {
+          memory.flow_state = 'message_complete';
+          console.log(`[${callSid}] Message confirmed, completing`);
+        } else if (/no|nope|wrong|incorrect/i.test(lowerSpeech)) {
+          // Re-collect information
+          memory.flow_state = 'message_first_name';
+          memory.first_name = null;
+          memory.last_name = null;
+          memory.phone = null;
+          console.log(`[${callSid}] Message details incorrect, restarting collection`);
+        } else {
+          // Assume yes if unclear
+          memory.flow_state = 'message_complete';
+          console.log(`[${callSid}] Unclear response, assuming confirmed`);
         }
       }
     }
@@ -749,7 +769,7 @@ app.post('/voice', async (req, res) => {
     if (userSpeech && userSpeech.trim()) {
       const regenerateStates = ['calendar_check', 'offer_slots', 'office_hours_message',
                                 'intent_clarification', 'message_first_name', 'appointment_first_name',
-                                'ask_preferred_time', 'message_fallback_intro'];
+                                'ask_preferred_time', 'message_fallback_intro', 'message_confirm'];
 
       if (regenerateStates.includes(memory.flow_state)) {
         const regenerateMessages = [buildSystemPrompt(memory)];
@@ -869,19 +889,15 @@ app.post('/voice', async (req, res) => {
     memory.conversation_ended ||
     agentText.toLowerCase().includes("goodbye");
 
+  // Generate and play audio (same logic for both continuing and ending)
+  // Use Twilio TTS directly for more reliability (ElevenLabs can cause voice drops)
   if (shouldEnd) {
-    memory.conversation_ended = true;
-    console.log(`[${callSid}] Conversation ended`);
-
-    // Say goodbye and hangup
     twiml.say({
       voice: "Polly.Joanna-Neural",
       language: "en-US"
     }, agentText);
-    twiml.hangup();
-
+    console.log(`[${callSid}] Using Twilio TTS for goodbye`);
   } else {
-    // Continue conversation - gather user input
     const gather = twiml.gather({
       input: 'speech',
       action: '/voice',
@@ -890,62 +906,18 @@ app.post('/voice', async (req, res) => {
       language: 'en-US',
       speechModel: 'phone_call'
     });
+    gather.say({
+      voice: "Polly.Joanna-Neural",
+      language: "en-US"
+    }, agentText);
+    console.log(`[${callSid}] Using Twilio TTS`);
+  }
 
-    // Generate and play audio inside gather
-    try {
-      // Try ElevenLabs TTS if configured
-      if (process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_VOICE_ID) {
-        const audioStream = await elevenlabs.generate({
-          voice: process.env.ELEVENLABS_VOICE_ID,
-          text: agentText,
-          model_id: "eleven_multilingual_v2",
-        });
-
-        // Convert stream to buffer
-        const chunks = [];
-        for await (const chunk of audioStream) {
-          chunks.push(Buffer.from(chunk));
-        }
-        const audioBuffer = Buffer.concat(chunks);
-
-        // Upload to tmpfiles.org for public MP3 URL
-        const formData = new FormData();
-        formData.append('file', audioBuffer, { filename: 'audio.mp3', contentType: 'audio/mpeg' });
-        const uploadResponse = await axios.post('https://tmpfiles.org/api/v1/upload', formData, {
-          headers: formData.getHeaders(),
-          timeout: 10000
-        });
-
-        const audioUrl = uploadResponse.data?.data?.url?.replace('tmpfiles.org/', 'tmpfiles.org/dl/') || uploadResponse.data?.files?.file?.url?.full;
-
-        if (audioUrl) {
-          gather.play(audioUrl);
-          console.log(`[${callSid}] Playing ElevenLabs audio`);
-        } else {
-          // Fallback to Twilio
-          gather.say({
-            voice: "Polly.Joanna-Neural",
-            language: "en-US"
-          }, agentText);
-          console.log(`[${callSid}] ElevenLabs URL failed, using Twilio TTS`);
-        }
-      } else {
-        // Use Twilio TTS
-        gather.say({
-          voice: "Polly.Joanna-Neural",
-          language: "en-US"
-        }, agentText);
-        console.log(`[${callSid}] Using Twilio TTS`);
-      }
-    } catch (audioError) {
-      console.error(`[${callSid}] Audio generation error:`, audioError.message);
-      // Fallback to basic Twilio TTS
-      gather.say({
-        voice: "Polly.Joanna-Neural",
-        language: "en-US"
-      }, agentText);
-    }
-
+  if (shouldEnd) {
+    memory.conversation_ended = true;
+    console.log(`[${callSid}] Conversation ended`);
+    twiml.hangup();
+  } else {
     // If no response after timeout, redirect to continue
     twiml.redirect('/voice');
   }
