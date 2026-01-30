@@ -21,12 +21,43 @@ app.get('/health', (req, res) => {
 
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const n8nWebhook = process.env.N8N_WEBHOOK_URL || 'https://scottde.app.n8n.cloud/webhook/TestAhadCPA';
+const n8nWebhook = process.env.N8N_WEBHOOK_URL || 'https://ahadandco.app.n8n.cloud/webhook/ahad';
 
 // Cal.com Configuration
 const calComApiKey = process.env.CALCOM_API_KEY;
 const calComEventTypeId = process.env.CALCOM_EVENT_TYPE_ID;
 const calComTimezone = process.env.CALCOM_TIMEZONE || 'America/New_York';
+
+// Security: Track calls by phone number to detect repeated/malicious calls
+const callTracker = {};  // { phoneNumber: { count: number, lastTimestamp: Date } }
+
+function checkMaliciousActivity(phoneNumber) {
+  const now = new Date();
+
+  if (!callTracker[phoneNumber]) {
+    callTracker[phoneNumber] = { count: 1, lastTimestamp: now };
+    return false;
+  }
+
+  const tracker = callTracker[phoneNumber];
+
+  // Check if multiple calls within short time (e.g., 3+ calls in 10 minutes)
+  const timeSinceLastCall = (now - tracker.lastTimestamp) / 1000 / 60; // minutes
+
+  tracker.count++;
+  tracker.lastTimestamp = now;
+
+  if (tracker.count >= 3 && timeSinceLastCall < 10) {
+    return true; // Malicious
+  }
+
+  // Reset count if more than 10 minutes since last call
+  if (timeSinceLastCall > 10) {
+    tracker.count = 1;
+  }
+
+  return false;
+}
 
 // ===== HELPER FUNCTIONS =====
 
@@ -56,7 +87,7 @@ async function getCalendarAvailability(startDate, endDate, preferredTime = null)
     // Return top 3-5 slots formatted for conversation
     return slots.slice(0, 5).map(slot => ({
       start: new Date(slot.time),
-      end: new Date(new Date(slot.time).getTime() + 60 * 60 * 1000), // Assume 1hr
+      end: new Date(new Date(slot.time).getTime() + 15 * 60 * 1000), // 15-minute slots
       iso: slot.time,
       displayText: formatSlotForSpeech(new Date(slot.time))
     }));
@@ -93,6 +124,7 @@ async function createCalComBooking(slotISO, userInfo) {
       {
         eventTypeId: parseInt(calComEventTypeId),
         start: slotISO,
+        lengthInMinutes: 15,  // 15-minute consultation
         responses: {
           name: `${userInfo.first_name} ${userInfo.last_name}`,
           email: userInfo.email,
@@ -144,18 +176,23 @@ function detectSlotAcceptance(speech, offeredSlots) {
 function detectIntentByKeywords(speech) {
   const lower = speech.toLowerCase();
 
-  // Speak to person patterns
-  if (/(speak|talk) (to|with)|someone|person|representative|human/i.test(lower)) {
-    return 'speak_to_person';
+  // INQUIRY patterns (new) - asking questions, not booking
+  if (/(inquir|question|information|tell me about|what do you|ask about|tax services|speak to|talk to|someone|person|representative|human|give me a name|looking for)/i.test(lower)) {
+    return 'inquiry';  // NEW: Route to office hours message ONLY
   }
 
-  // Appointment patterns
-  if (/appointment|book|schedule|available|meeting|consultation|slot|time/i.test(lower)) {
+  // OFFICE HOURS question (new) - asking about business hours
+  if (/(office hours|when.*open|what time|hours|open|times|available times)/i.test(lower)) {
+    return 'office_hours_question';  // NEW: Explain hours, then offer message OR booking
+  }
+
+  // APPOINTMENT patterns - clear booking intent
+  if (/(appointment|book|schedule|consultation|make.*appointment|set up|meeting|slot)/i.test(lower)) {
     return 'appointment';
   }
 
-  // Message patterns
-  if (/message|call back|leave.*message|voice.*mail/i.test(lower)) {
+  // MESSAGE patterns
+  if (/(message|call back|leave.*message|voice.*mail|callback)/i.test(lower)) {
     return 'message';
   }
 
@@ -224,14 +261,22 @@ function extractEmail(speech) {
 
 // Build context-aware system prompt
 function buildSystemPrompt(memory) {
-  const baseContext = "You are a professional receptionist for Ahad and Co CPA Firm.";
+  const baseContext = "You are a professional receptionist for Ahad and Co CPA Firm. " +
+    "PRONUNCIATION: Say 'Ahad' as 'AY-HAD'. " +
+    "Be clear, professional, natural pace.";
 
   const statePrompts = {
     greeting: `${baseContext}\nIf this is the FIRST message (no history), say EXACTLY: "Thanks for calling Ahad and Co CPA Firm. How can I help you today?"\nOtherwise, say: "How can I help you today?"`,
 
     intent_clarification: `${baseContext}\nThe caller's intent is unclear. Ask politely:\n"I'd be happy to help. Are you looking to schedule an appointment, leave a message, or speak with someone?"`,
 
-    office_hours_message: `${baseContext}\nSay EXACTLY: "No one is available now. Our office hours are Monday-Friday, 10:00 AM to 6:00 PM. Please call back if you want to talk to someone, or you can leave a message. Do you want to leave a message?"`,
+    office_hours_message: `${baseContext}\nSay EXACTLY: "No one is available now. Our office hours are Tuesday-Thursday, 11:00 AM to 5:00 PM. Please call back if you want to talk to someone, or you can leave a message. Do you want to leave a message?"`,
+
+    // NEW: Inquiry intent (asking questions/speak to person)
+    inquiry_intent: `${baseContext}\nSay EXACTLY: "No one is available now. Our office hours are Tuesday-Thursday, 11:00 AM to 5:00 PM. Please call back if you want to talk to someone, or you can leave a message. Do you want to leave a message?"`,
+
+    // NEW: Office hours question
+    office_hours_question: `${baseContext}\nSay: "Our office is open Tuesday-Thursday, 11:00 AM to 5:00 PM Eastern Time. Would you like to leave a message for a callback, or schedule a quick 15-minute consultation?"`,
 
     office_hours_declined: `${baseContext}\nSay: "Thanks for calling. Goodbye."`,
 
@@ -241,8 +286,27 @@ function buildSystemPrompt(memory) {
       if (!memory.offered_slots || memory.offered_slots.length === 0) {
         return `${baseContext}\nSay: "I'm sorry, I don't see any availability right now. Let me take your message instead."`;
       }
-      const slotsText = memory.offered_slots.map((s, i) => `${i + 1}. ${s.displayText}`).join(', ');
-      return `${baseContext}\nPresent the EARLIEST available appointment times naturally.\nAvailable times: ${slotsText}\nSay: "I have the following times available: ${slotsText}. Which one works best for you?"`;
+
+      // Clean date format: remove malformed text, ensure natural speech format
+      const cleanedSlots = memory.offered_slots.map(s => {
+        let cleanText = s.displayText
+          .replace(/\d{4} \w+ \d+\//g, '')  // Remove "2026 January 1/" prefixes
+          .replace(/\d+\/\d+\/\d+/g, '')    // Remove "1/22/2026" formats
+          .replace(/Eastern Standard Time/gi, '')  // Remove timezone names
+          .replace(/from .+ to .+/gi, match => {
+            // If range shown, extract only start time
+            const startMatch = match.match(/from (\d+:\d+ [AP]M)/i);
+            return startMatch ? `at ${startMatch[1]}` : match;
+          })
+          .replace(/\s+/g, ' ')
+          .trim();
+        return { ...s, displayText: cleanText };
+      });
+
+      memory.offered_slots = cleanedSlots; // Update with cleaned versions
+
+      const slotsText = cleanedSlots.map((s, i) => `${i + 1}. ${s.displayText}`).join(', ');
+      return `${baseContext}\nPresent EARLIEST available 15-minute consultation times. Say ONLY start time (e.g., "at 1:30 PM"), never mention range or duration.\nAvailable: ${slotsText}\nSay: "The earliest slot I see is ${cleanedSlots[0].displayText} — would that work for you?"`;
     })(),
 
     ask_preferred_time: `${baseContext}\nAsk: "What day and time would work better for you?"`,
@@ -263,8 +327,18 @@ function buildSystemPrompt(memory) {
     message_phone: `${baseContext}\nSay: "What's the best phone number to reach you?"`,
     message_email: `${baseContext}\nSay: "And your email address?"`,
     message_content: `${baseContext}\nSay: "What is the reason for your call?"`,
-    message_confirm: `${baseContext}\nSay: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}. Is that correct?"`,
-    message_complete: `${baseContext}\nSay EXACTLY: "I will have someone call you back as soon as the office opens. Thanks for calling. Goodbye."`
+    message_confirm: `${baseContext}\nSay ONLY: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}. Is that correct?" Do NOT repeat email or reason.`,
+    message_complete: `${baseContext}\nSay EXACTLY: "I will have someone call you back as soon as the office opens. Thanks for calling. Goodbye."`,
+
+    // NEW: Email spelling states for appointment flow
+    appointment_email_repeat_full: `${baseContext}\nSay the full email slowly once: "${memory.email_spelled}". Pause briefly after saying it. Do NOT ask anything - just speak and pause silently.`,
+    appointment_email_spell_username: `${baseContext}\nSpell ONLY the username part (before @) one letter at a time. After each letter, pause briefly. Do NOT say "okay?" or ask anything - just say the letter and pause. If user corrects, re-spell only the corrected part.`,
+    appointment_email_final_confirm: `${baseContext}\nSay: "Is that correct?" Wait for response.`,
+
+    // NEW: Email spelling states for message flow
+    message_email_repeat_full: `${baseContext}\nRepeat email slowly: "${memory.email_spelled}". Pause briefly.`,
+    message_email_spell_username: `${baseContext}\nSpell username letter-by-letter with brief pauses. No prompts.`,
+    message_email_final_confirm: `${baseContext}\nAsk: "Is that correct?"`
   };
 
   return {
@@ -281,8 +355,39 @@ app.post('/voice', async (req, res) => {
   const callSid = req.body.CallSid;
   const userSpeech = req.body.SpeechResult || '';
   const isFirstMessage = !userSpeech;
+  const callerPhone = req.body.From || 'unknown';
 
   console.log(`[${callSid}] Incoming call - Speech: "${userSpeech}"`);
+
+  // Security check for malicious activity
+  const isMalicious = checkMaliciousActivity(callerPhone);
+
+  if (isMalicious && !conversationMemory[callSid]) {
+    console.log(`[${callSid}] Malicious activity detected from ${callerPhone}`);
+
+    // Send alert to n8n
+    try {
+      await axios.post(n8nWebhook, {
+        type: "potential_malicious",
+        phone: callerPhone,
+        timestamp: new Date().toISOString(),
+        reason: "Multiple calls in short time period"
+      }, { timeout: 5000 });
+    } catch (error) {
+      console.error(`[${callSid}] Error sending malicious alert:`, error.message);
+    }
+
+    // End call immediately
+    twiml.say({
+      voice: "Polly.Joanna-Neural",
+      language: "en-US"
+    }, "Sorry, possible malicious activity detected. Goodbye.");
+    twiml.hangup();
+
+    res.type('text/xml');
+    res.send(twiml.toString());
+    return;
+  }
 
   if (!conversationMemory[callSid]) {
     conversationMemory[callSid] = {
@@ -310,6 +415,10 @@ app.post('/voice', async (req, res) => {
 
       // Message-specific
       message_content: null,
+
+      // Email spelling confirmation (NEW)
+      email_spelled: null,              // Email during spelling confirmation
+      email_confirmation_stage: null,   // Track which stage of confirmation
 
       // Retry counters for validation
       first_name_retry: 0,
@@ -414,12 +523,19 @@ app.post('/voice', async (req, res) => {
         console.log(`[${callSid}] Intent detected: ${memory.intent}`);
 
         // Route based on intent
-        if (memory.intent === 'speak_to_person') {
-          memory.flow_state = 'office_hours_message';
-        } else if (memory.intent === 'appointment') {
+        if (memory.intent === 'inquiry' || memory.intent === 'speak_to_person') {
+          // NEW: Inquiry or speak-to-person → Office hours message ONLY (no booking push)
+          memory.flow_state = 'inquiry_intent';  // Use new state
+        }
+        else if (memory.intent === 'office_hours_question') {
+          // NEW: Office hours question → Explain hours, offer message OR booking
+          memory.flow_state = 'office_hours_question';
+        }
+        else if (memory.intent === 'appointment') {
+          // STRICT NO-WAIT RULE: Immediately start calendar check without waiting for confirmation
           memory.flow_state = 'calendar_check';
 
-          // Immediately check calendar availability
+          // Immediately fetch slots (no pause, no confirmation phrase)
           const startDate = new Date();
           const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
           const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
@@ -432,9 +548,11 @@ app.post('/voice', async (req, res) => {
             console.log(`[${callSid}] No calendar availability, switching to message flow`);
             memory.flow_state = 'message_first_name';
           }
-        } else if (memory.intent === 'message') {
+        }
+        else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
-        } else {
+        }
+        else {
           memory.flow_state = 'intent_clarification';
         }
       }
@@ -445,9 +563,13 @@ app.post('/voice', async (req, res) => {
         memory.intent = detectIntentByKeywords(userSpeech);
         console.log(`[${callSid}] Intent clarified: ${memory.intent}`);
 
-        if (memory.intent === 'speak_to_person') {
-          memory.flow_state = 'office_hours_message';
-        } else if (memory.intent === 'appointment') {
+        if (memory.intent === 'inquiry' || memory.intent === 'speak_to_person') {
+          memory.flow_state = 'inquiry_intent';
+        }
+        else if (memory.intent === 'office_hours_question') {
+          memory.flow_state = 'office_hours_question';
+        }
+        else if (memory.intent === 'appointment') {
           memory.flow_state = 'calendar_check';
 
           // Immediately check calendar availability
@@ -505,6 +627,43 @@ app.post('/voice', async (req, res) => {
         // Default: assume they want to leave a message if unclear
         else {
           memory.flow_state = 'message_first_name';
+        }
+      }
+
+      // ===== NEW: INQUIRY INTENT HANDLER =====
+      else if (memory.flow_state === 'inquiry_intent') {
+        if (/yes|yeah|sure|ok|message|please/i.test(lowerSpeech)) {
+          memory.flow_state = 'message_first_name';
+        } else if (/no|nope|not|call back|later/i.test(lowerSpeech)) {
+          memory.flow_state = 'office_hours_declined';
+          memory.conversation_ended = true;
+        } else {
+          // Default: assume they want to leave a message
+          memory.flow_state = 'message_first_name';
+        }
+      }
+
+      // ===== NEW: OFFICE HOURS QUESTION HANDLER =====
+      else if (memory.flow_state === 'office_hours_question') {
+        if (/(message|callback|call back)/i.test(lowerSpeech)) {
+          memory.flow_state = 'message_first_name';
+        } else if (/(appointment|book|schedule|consultation)/i.test(lowerSpeech)) {
+          memory.flow_state = 'calendar_check';
+
+          // Fetch slots immediately
+          const startDate = new Date();
+          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
+
+          if (slots && slots.length > 0) {
+            memory.offered_slots = slots;
+            memory.flow_state = 'offer_slots';
+          } else {
+            memory.flow_state = 'message_first_name';
+          }
+        } else {
+          // Unclear, ask again
+          memory.flow_state = 'office_hours_question';
         }
       }
 
@@ -595,12 +754,14 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_email') {
+        // Initial email capture
         const extracted = extractEmail(userSpeech);
         if (extracted && extracted.length > 0) {
-          memory.email = extracted;
-          memory.flow_state = 'appointment_phone';
+          memory.email_spelled = extracted;
+          memory.email_confirmation_stage = 'repeat_full';
+          memory.flow_state = 'appointment_email_repeat_full';
           memory.email_retry = 0;
-          console.log(`[${callSid}] Appointment email: ${memory.email}`);
+          console.log(`[${callSid}] Appointment email captured: ${memory.email_spelled}`);
         } else {
           memory.email_retry++;
           console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
@@ -609,6 +770,49 @@ app.post('/voice', async (req, res) => {
             memory.email = userSpeech.trim();
             memory.flow_state = 'appointment_phone';
             console.log(`[${callSid}] Accepting email after retries: ${memory.email}`);
+          }
+        }
+      }
+
+      // NEW: Email repeat full state
+      else if (memory.flow_state === 'appointment_email_repeat_full') {
+        // Just said the full email, now move to spelling username
+        memory.flow_state = 'appointment_email_spell_username';
+        memory.email_confirmation_stage = 'spelling';
+        console.log(`[${callSid}] Moving to spell username for email: ${memory.email_spelled}`);
+      }
+
+      // NEW: Email spelling username state
+      else if (memory.flow_state === 'appointment_email_spell_username') {
+        // After spelling, ask if correct
+        memory.flow_state = 'appointment_email_final_confirm';
+        memory.email_confirmation_stage = 'confirm';
+        console.log(`[${callSid}] Asking for email confirmation`);
+      }
+
+      // NEW: Email final confirmation
+      else if (memory.flow_state === 'appointment_email_final_confirm') {
+        if (/yes|correct|right|yep/i.test(lowerSpeech)) {
+          memory.email = memory.email_spelled;
+          memory.flow_state = 'appointment_phone';
+          console.log(`[${callSid}] Email confirmed: ${memory.email}`);
+        } else if (/no|wrong|incorrect/i.test(lowerSpeech)) {
+          // Re-collect email
+          memory.email_spelled = null;
+          memory.flow_state = 'appointment_email';
+          console.log(`[${callSid}] Email incorrect, restarting collection`);
+        } else {
+          // Check if user provided correction
+          const corrected = extractEmail(userSpeech);
+          if (corrected) {
+            memory.email_spelled = corrected;
+            memory.flow_state = 'appointment_email_repeat_full';
+            console.log(`[${callSid}] Email corrected to: ${corrected}`);
+          } else {
+            // Unclear, assume yes
+            memory.email = memory.email_spelled;
+            memory.flow_state = 'appointment_phone';
+            console.log(`[${callSid}] Unclear response, assuming email confirmed: ${memory.email}`);
           }
         }
       }
@@ -716,12 +920,14 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'message_email') {
+        // Initial email capture
         const extracted = extractEmail(userSpeech);
         if (extracted && extracted.length > 0) {
-          memory.email = extracted;
-          memory.flow_state = 'message_content';
+          memory.email_spelled = extracted;
+          memory.email_confirmation_stage = 'repeat_full';
+          memory.flow_state = 'message_email_repeat_full';
           memory.email_retry = 0;
-          console.log(`[${callSid}] Message email: ${memory.email}`);
+          console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
         } else {
           memory.email_retry++;
           console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
@@ -730,6 +936,49 @@ app.post('/voice', async (req, res) => {
             memory.email = userSpeech.trim();
             memory.flow_state = 'message_content';
             console.log(`[${callSid}] Accepting email after retries: ${memory.email}`);
+          }
+        }
+      }
+
+      // NEW: Message email repeat full state
+      else if (memory.flow_state === 'message_email_repeat_full') {
+        // Just said the full email, now move to spelling username
+        memory.flow_state = 'message_email_spell_username';
+        memory.email_confirmation_stage = 'spelling';
+        console.log(`[${callSid}] Moving to spell username for message email: ${memory.email_spelled}`);
+      }
+
+      // NEW: Message email spelling username state
+      else if (memory.flow_state === 'message_email_spell_username') {
+        // After spelling, ask if correct
+        memory.flow_state = 'message_email_final_confirm';
+        memory.email_confirmation_stage = 'confirm';
+        console.log(`[${callSid}] Asking for message email confirmation`);
+      }
+
+      // NEW: Message email final confirmation
+      else if (memory.flow_state === 'message_email_final_confirm') {
+        if (/yes|correct|right|yep/i.test(lowerSpeech)) {
+          memory.email = memory.email_spelled;
+          memory.flow_state = 'message_content';
+          console.log(`[${callSid}] Message email confirmed: ${memory.email}`);
+        } else if (/no|wrong|incorrect/i.test(lowerSpeech)) {
+          // Re-collect email
+          memory.email_spelled = null;
+          memory.flow_state = 'message_email';
+          console.log(`[${callSid}] Message email incorrect, restarting collection`);
+        } else {
+          // Check if user provided correction
+          const corrected = extractEmail(userSpeech);
+          if (corrected) {
+            memory.email_spelled = corrected;
+            memory.flow_state = 'message_email_repeat_full';
+            console.log(`[${callSid}] Message email corrected to: ${corrected}`);
+          } else {
+            // Unclear, assume yes
+            memory.email = memory.email_spelled;
+            memory.flow_state = 'message_content';
+            console.log(`[${callSid}] Unclear response, assuming message email confirmed: ${memory.email}`);
           }
         }
       }
@@ -851,10 +1100,13 @@ app.post('/voice', async (req, res) => {
     console.log(`[${callSid}] Sending message to n8n...`);
 
     try {
-      // Build transcript summary from conversation history
-      const transcriptSummary = memory.history
-        .map(msg => `${msg.role}: ${msg.content}`)
-        .join('\n');
+      // Create concise summary instead of full transcript (2-3 sentences max)
+      const transcriptSummary = (() => {
+        const userMessages = memory.history.filter(m => m.role === 'user').map(m => m.content);
+        const reason = memory.message_content || userMessages[userMessages.length - 1] || 'No reason provided';
+
+        return `User requested callback. Reason: ${reason}. Details: ${memory.first_name} ${memory.last_name}, ${memory.phone}, ${memory.email}.`;
+      })();
 
       await axios.post(n8nWebhook, {
         type: "message",
