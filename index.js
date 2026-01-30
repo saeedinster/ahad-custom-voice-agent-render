@@ -21,7 +21,7 @@ app.get('/health', (req, res) => {
 
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const n8nWebhook = process.env.N8N_WEBHOOK_URL || 'https://ahadandco.app.n8n.cloud/webhook/ahad';
+const n8nWebhook = process.env.N8N_WEBHOOK_URL || 'https://scottde.app.n8n.cloud/webhook/TestAhadCPA';
 
 // Cal.com Configuration
 const calComApiKey = process.env.CALCOM_API_KEY;
