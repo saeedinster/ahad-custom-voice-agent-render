@@ -309,8 +309,6 @@ function buildSystemPrompt(memory) {
       return `${baseContext}\nPresent EARLIEST available 15-minute consultation times. Say ONLY start time (e.g., "at 1:30 PM"), never mention range or duration.\nAvailable: ${slotsText}\nSay: "The earliest slot I see is ${cleanedSlots[0].displayText} — would that work for you?"`;
     })(),
 
-    ask_preferred_time: `${baseContext}\nAsk: "What day and time would work better for you?"`,
-
     message_fallback_intro: `${baseContext}\nSay: "I'm having trouble finding a suitable time. Let me take your information and someone will call you back to schedule. May I have your first name?"`,
 
     appointment_first_name: `${baseContext}\nSay: "Perfect! Let me get some information to confirm your appointment. May I have your first name?"`,
@@ -696,20 +694,42 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] Slot accepted: ${memory.selected_slot}`);
         } else {
           memory.slot_offer_attempt++;
-          console.log(`[${callSid}] Slot rejected (attempt ${memory.slot_offer_attempt}/3)`);
+          console.log(`[${callSid}] Slot rejected (attempt ${memory.slot_offer_attempt}/4)`);
 
           if (memory.slot_offer_attempt >= 4) {
+            // After 4 rejections, switch to message flow
             memory.flow_state = 'message_fallback_intro';
+            console.log(`[${callSid}] Max slot attempts reached, switching to message flow`);
           } else {
-            memory.flow_state = 'ask_preferred_time';
+            // Immediately re-check calendar for more slots (no asking for preferred time)
+            memory.flow_state = 'calendar_check';
+
+            // Fetch next batch of slots immediately
+            const startDate = new Date();
+            const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
+            const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
+
+            if (slots && slots.length > 0) {
+              // Filter out already offered slots to show new options
+              const newSlots = slots.filter(slot =>
+                !memory.offered_slots.some(offered => offered.iso === slot.iso)
+              );
+
+              if (newSlots.length > 0) {
+                memory.offered_slots = newSlots;
+                memory.flow_state = 'offer_slots';
+                console.log(`[${callSid}] Re-offering ${newSlots.length} different calendar slots`);
+              } else {
+                // No new slots available, switch to message flow
+                memory.flow_state = 'message_fallback_intro';
+                console.log(`[${callSid}] No additional slots available, switching to message flow`);
+              }
+            } else {
+              memory.flow_state = 'message_fallback_intro';
+              console.log(`[${callSid}] No calendar availability, switching to message flow`);
+            }
           }
         }
-      }
-
-      else if (memory.flow_state === 'ask_preferred_time') {
-        memory.user_preferred_time = userSpeech.trim();
-        memory.flow_state = 'calendar_check';
-        console.log(`[${callSid}] User preferred time: ${memory.user_preferred_time}`);
       }
 
       // ===== APPOINTMENT DATA COLLECTION =====
@@ -1018,7 +1038,7 @@ app.post('/voice', async (req, res) => {
     if (userSpeech && userSpeech.trim()) {
       const regenerateStates = ['calendar_check', 'offer_slots', 'office_hours_message',
                                 'intent_clarification', 'message_first_name', 'appointment_first_name',
-                                'ask_preferred_time', 'message_fallback_intro', 'message_confirm'];
+                                'message_fallback_intro', 'message_confirm'];
 
       if (regenerateStates.includes(memory.flow_state)) {
         const regenerateMessages = [buildSystemPrompt(memory)];
