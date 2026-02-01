@@ -446,8 +446,8 @@ app.post('/voice', async (req, res) => {
             memory.flow_state = 'offer_slots';
             console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
           } else {
-            console.log(`[${callSid}] No calendar availability, switching to message flow`);
-            memory.flow_state = 'message_first_name';
+            console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
+            memory.flow_state = 'message_fallback_intro';
           }
         }
         else if (memory.intent === 'message') {
@@ -489,8 +489,8 @@ app.post('/voice', async (req, res) => {
             memory.flow_state = 'offer_slots';
             console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
           } else {
-            console.log(`[${callSid}] No calendar availability, switching to message flow`);
-            memory.flow_state = 'message_first_name';
+            console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
+            memory.flow_state = 'message_fallback_intro';
           }
         } else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
@@ -514,8 +514,8 @@ app.post('/voice', async (req, res) => {
             memory.flow_state = 'offer_slots';
             console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
           } else {
-            console.log(`[${callSid}] No calendar availability, switching to message flow`);
-            memory.flow_state = 'message_first_name';
+            console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
+            memory.flow_state = 'message_fallback_intro';
           }
         }
       }
@@ -594,9 +594,8 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'offer_slots';
           console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
         } else {
-          console.log(`[${callSid}] No calendar availability, switching to message flow`);
-          agentText = "I'm sorry, I don't see any availability in the next two weeks. Let me take your message and someone will call you back.";
-          memory.flow_state = 'message_first_name';
+          console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
+          memory.flow_state = 'message_fallback_intro';
         }
       }
 
@@ -813,8 +812,25 @@ app.post('/voice', async (req, res) => {
         }
       }
 
+      // ===== MESSAGE FALLBACK (No slots available) =====
+      else if (memory.flow_state === 'message_fallback_intro') {
+        // User was asked "Would you like to leave a message?"
+        if (/yes|yeah|sure|ok|okay|alright|please|message/i.test(lowerSpeech)) {
+          memory.flow_state = 'message_first_name';
+          console.log(`[${callSid}] User agreed to leave message after no slots`);
+        } else if (/no|nope|not|call back|later|goodbye|bye/i.test(lowerSpeech)) {
+          memory.flow_state = 'office_hours_declined';
+          memory.conversation_ended = true;
+          console.log(`[${callSid}] User declined message - ending call`);
+        } else {
+          // Default: assume they want to leave a message
+          memory.flow_state = 'message_first_name';
+          console.log(`[${callSid}] Unclear response, defaulting to message flow`);
+        }
+      }
+
       // ===== MESSAGE DATA COLLECTION =====
-      else if (memory.flow_state === 'message_first_name' || memory.flow_state === 'message_fallback_intro') {
+      else if (memory.flow_state === 'message_first_name') {
         // For message flow: collect first name, then ask for last name (per spec)
         const extracted = extractName(userSpeech);
         memory.first_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
