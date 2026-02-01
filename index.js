@@ -54,14 +54,32 @@ async function getCalendarAvailability(startDate, endDate, preferredTime = null)
       { timeout: 10000 }
     );
 
-    const slots = response.data?.slots || [];
+    console.log('Cal.com API response:', JSON.stringify(response.data, null, 2));
 
-    // Return top 3-5 slots formatted for conversation
-    return slots.slice(0, 5).map(slot => ({
-      start: new Date(slot.time),
-      end: new Date(new Date(slot.time).getTime() + 15 * 60 * 1000), // 15-minute slots
-      iso: slot.time,
-      displayText: formatSlotForSpeech(new Date(slot.time))
+    // Cal.com returns slots as object with dates as keys: { "2024-01-15": ["time1", "time2"], ... }
+    const slotsData = response.data?.slots || {};
+
+    // Flatten all slots from all dates into a single array
+    const allSlots = [];
+    for (const date of Object.keys(slotsData).sort()) {
+      const timesForDate = slotsData[date];
+      if (Array.isArray(timesForDate)) {
+        for (const timeObj of timesForDate) {
+          // Cal.com can return either string times or objects with 'time' property
+          const timeStr = typeof timeObj === 'string' ? timeObj : timeObj.time;
+          allSlots.push(timeStr);
+        }
+      }
+    }
+
+    console.log(`Cal.com found ${allSlots.length} total slots`);
+
+    // Return top 5 slots formatted for conversation
+    return allSlots.slice(0, 5).map(time => ({
+      start: new Date(time),
+      end: new Date(new Date(time).getTime() + 15 * 60 * 1000), // 15-minute slots
+      iso: time,
+      displayText: formatSlotForSpeech(new Date(time))
     }));
   } catch (error) {
     console.error('Cal.com API error:', error.message);
@@ -821,76 +839,109 @@ app.post('/voice', async (req, res) => {
 
       // ===== MESSAGE DATA COLLECTION =====
       else if (memory.flow_state === 'message_first_name') {
-        // For message flow: collect first name, then ask for last name (per spec)
-        const extracted = extractName(userSpeech);
-        memory.first_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
-        memory.first_name_retry = 0;
-        memory.flow_state = 'message_last_name';
-        console.log(`[${callSid}] Message first_name recorded: ${memory.first_name}`);
+        // Check if user wants to switch to appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment during message flow - switching`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
+        } else {
+          // For message flow: collect first name, then ask for last name (per spec)
+          const extracted = extractName(userSpeech);
+          memory.first_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
+          memory.first_name_retry = 0;
+          memory.flow_state = 'message_last_name';
+          console.log(`[${callSid}] Message first_name recorded: ${memory.first_name}`);
+        }
       }
 
       else if (memory.flow_state === 'message_last_name') {
-        const extracted = extractName(userSpeech);
-        if (extracted && extracted.length > 0) {
-          memory.last_name = extracted;
-          memory.flow_state = 'message_phone';
-          memory.last_name_retry = 0;
-          console.log(`[${callSid}] Message last_name: ${memory.last_name}`);
+        // Check if user wants to switch to appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment during message flow - switching`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
         } else {
-          memory.last_name_retry++;
-          console.log(`[${callSid}] Invalid last name, retry ${memory.last_name_retry}/2`);
-
-          if (memory.last_name_retry >= 2) {
-            memory.last_name = userSpeech.trim();
+          const extracted = extractName(userSpeech);
+          if (extracted && extracted.length > 0) {
+            memory.last_name = extracted;
             memory.flow_state = 'message_phone';
-            console.log(`[${callSid}] Accepting last name after retries: ${memory.last_name}`);
+            memory.last_name_retry = 0;
+            console.log(`[${callSid}] Message last_name: ${memory.last_name}`);
+          } else {
+            memory.last_name_retry++;
+            console.log(`[${callSid}] Invalid last name, retry ${memory.last_name_retry}/2`);
+
+            if (memory.last_name_retry >= 2) {
+              memory.last_name = userSpeech.trim();
+              memory.flow_state = 'message_phone';
+              console.log(`[${callSid}] Accepting last name after retries: ${memory.last_name}`);
+            }
           }
         }
       }
 
       else if (memory.flow_state === 'message_phone') {
-        const extracted = userSpeech.replace(/\D/g, '');
-        if (extracted && extracted.length >= 10) {
-          memory.phone = extracted;
-          memory.flow_state = 'message_email';
-          memory.phone_retry = 0;
-          console.log(`[${callSid}] Message phone: ${memory.phone}`);
+        // Check if user wants to switch to appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment during message flow - switching`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
         } else {
-          memory.phone_retry++;
-          console.log(`[${callSid}] Invalid phone, retry ${memory.phone_retry}/2`);
-
-          if (memory.phone_retry >= 2) {
-            memory.phone = extracted || userSpeech.replace(/\D/g, '');
+          const extracted = userSpeech.replace(/\D/g, '');
+          if (extracted && extracted.length >= 10) {
+            memory.phone = extracted;
             memory.flow_state = 'message_email';
-            console.log(`[${callSid}] Accepting phone after retries: ${memory.phone}`);
+            memory.phone_retry = 0;
+            console.log(`[${callSid}] Message phone: ${memory.phone}`);
+          } else {
+            memory.phone_retry++;
+            console.log(`[${callSid}] Invalid phone, retry ${memory.phone_retry}/2`);
+
+            if (memory.phone_retry >= 2) {
+              memory.phone = extracted || userSpeech.replace(/\D/g, '');
+              memory.flow_state = 'message_email';
+              console.log(`[${callSid}] Accepting phone after retries: ${memory.phone}`);
+            }
           }
         }
       }
 
       else if (memory.flow_state === 'message_email') {
-        // Capture email from user
-        const extracted = extractEmail(userSpeech);
-        if (extracted && extracted.length > 0) {
-          memory.email_spelled = extracted;
-          memory.flow_state = 'message_email_confirm';  // Go to confirmation
-          memory.email_retry = 0;
-          console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
+        // Check if user wants to switch to appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment during message flow - switching`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
         } else {
-          memory.email_retry++;
-          console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
+          // Capture email from user
+          const extracted = extractEmail(userSpeech);
+          if (extracted && extracted.length > 0) {
+            memory.email_spelled = extracted;
+            memory.flow_state = 'message_email_confirm';  // Go to confirmation
+            memory.email_retry = 0;
+            console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
+          } else {
+            memory.email_retry++;
+            console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
 
-          if (memory.email_retry >= 2) {
-            // Accept whatever was said after 2 retries
-            memory.email_spelled = userSpeech.trim();
-            memory.flow_state = 'message_email_confirm';
-            console.log(`[${callSid}] Accepting email after retries: ${memory.email_spelled}`);
+            if (memory.email_retry >= 2) {
+              // Accept whatever was said after 2 retries
+              memory.email_spelled = userSpeech.trim();
+              memory.flow_state = 'message_email_confirm';
+              console.log(`[${callSid}] Accepting email after retries: ${memory.email_spelled}`);
+            }
           }
         }
       }
 
       // SIMPLIFIED: Message email confirmation - agent reads back, waits for yes/no
       else if (memory.flow_state === 'message_email_confirm') {
-        if (/yes|yeah|correct|right|yep|that's right|that is correct/i.test(lowerSpeech)) {
+        // Check if user wants to switch to appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment during message flow - switching`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
+        } else if (/yes|yeah|correct|right|yep|that's right|that is correct/i.test(lowerSpeech)) {
           // Email confirmed - proceed to reason for call
           memory.email = memory.email_spelled;
           memory.flow_state = 'message_content';
@@ -918,19 +969,30 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'message_content') {
-        const extracted = userSpeech.trim();
-        if (extracted && extracted.length > 2) {
-          memory.message_content = extracted;
-          memory.flow_state = 'message_confirm';
-          console.log(`[${callSid}] Message content: ${memory.message_content}`);
+        // Check if user wants to switch to appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment during message flow - switching`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
         } else {
-          console.log(`[${callSid}] Message too short, staying in same state`);
+          const extracted = userSpeech.trim();
+          if (extracted && extracted.length > 2) {
+            memory.message_content = extracted;
+            memory.flow_state = 'message_confirm';
+            console.log(`[${callSid}] Message content: ${memory.message_content}`);
+          } else {
+            console.log(`[${callSid}] Message too short, staying in same state`);
+          }
         }
       }
 
       else if (memory.flow_state === 'message_confirm') {
-        // Check if user confirms
-        if (/yes|yeah|correct|right|yep/i.test(lowerSpeech)) {
+        // Check if user wants to switch to appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment during message flow - switching`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
+        } else if (/yes|yeah|correct|right|yep/i.test(lowerSpeech)) {
           memory.flow_state = 'message_complete';
           console.log(`[${callSid}] Message confirmed, completing`);
         } else if (/no|nope|wrong|incorrect/i.test(lowerSpeech)) {
@@ -953,7 +1015,7 @@ app.post('/voice', async (req, res) => {
       const regenerateStates = ['offer_slots', 'office_hours_message', 'inquiry_intent',
                                 'intent_clarification', 'message_fallback_intro', 'message_confirm',
                                 'office_hours_question', 'ask_preferred_time', 'appointment_email_confirm',
-                                'message_email_confirm', 'appointment_confirm'];
+                                'message_email_confirm', 'appointment_confirm', 'calendar_check'];
 
       if (regenerateStates.includes(memory.flow_state)) {
         const regenerateMessages = [buildSystemPrompt(memory)];
