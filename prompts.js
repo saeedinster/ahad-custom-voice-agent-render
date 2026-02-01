@@ -69,6 +69,8 @@ function buildAllPrompts(memory) {
 
     appointment_previous_client: `${baseContext}\nQuestion 5 of 7.\nSay EXACTLY: "Are you a new client or a previous client with Ahad and Co?"`,
 
+    appointment_welcome_back: `${baseContext}\nUser is a returning client. SKIP "How did you hear about us?".\nSay EXACTLY: "Welcome back! What is the reason for your call?"`,
+
     appointment_referral: `${baseContext}\nQuestion 6 of 7. ONLY ask if user said NEW client.\nSay EXACTLY: "How did you hear about us?"`,
 
     appointment_call_reason: `${baseContext}\nQuestion 7 of 7.\nSay EXACTLY: "What is the reason for your call?"`,

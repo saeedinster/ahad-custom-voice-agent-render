@@ -775,10 +775,10 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_welcome_back') {
-        // Just transitioned, no action needed - the prompt will say "Welcome back"
-        // Next user input will trigger call_reason question
-        memory.flow_state = 'appointment_call_reason';
-        console.log(`[${callSid}] Transitioning to call_reason (skipped referral_source)`);
+        // Prompt already asked "What is the reason for your call?" so capture it here
+        memory.call_reason = userSpeech.trim();
+        memory.flow_state = 'appointment_confirm';
+        console.log(`[${callSid}] Returning client - call reason: ${memory.call_reason} (skipped referral)`);
       }
 
       else if (memory.flow_state === 'appointment_referral') {
@@ -789,8 +789,28 @@ app.post('/voice', async (req, res) => {
 
       else if (memory.flow_state === 'appointment_call_reason') {
         memory.call_reason = userSpeech.trim();
-        memory.flow_state = 'appointment_complete';
+        memory.flow_state = 'appointment_confirm';
         console.log(`[${callSid}] Call reason: ${memory.call_reason}`);
+      }
+
+      else if (memory.flow_state === 'appointment_confirm') {
+        // Check if user confirms
+        if (/yes|yeah|correct|right|yep/i.test(lowerSpeech)) {
+          memory.flow_state = 'appointment_complete';
+          console.log(`[${callSid}] Appointment confirmed, completing`);
+        } else if (/no|nope|wrong|incorrect/i.test(lowerSpeech)) {
+          // Re-collect information
+          memory.flow_state = 'appointment_first_name';
+          memory.first_name = null;
+          memory.last_name = null;
+          memory.phone = null;
+          memory.email = null;
+          console.log(`[${callSid}] Appointment details incorrect, restarting collection`);
+        } else {
+          // Assume yes if unclear
+          memory.flow_state = 'appointment_complete';
+          console.log(`[${callSid}] Unclear response, assuming appointment confirmed`);
+        }
       }
 
       // ===== MESSAGE DATA COLLECTION =====
