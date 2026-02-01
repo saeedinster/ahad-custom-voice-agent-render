@@ -13,7 +13,7 @@ const baseContext = "You are Ahad & Co After-hours Voice Agent. " +
 function buildAllPrompts(memory) {
   return {
     // ===== STEP 1: GREETING =====
-    greeting: `${baseContext}\nSay EXACTLY: "Thanks for calling Ahad and Co. How can I help you today?" NEVER change these words.`,
+    greeting: `${baseContext}\nSay EXACTLY: "Thanks for calling Ahad and Co CPA Firm. How can I help you today?" NEVER change these words. Pronounce Ahad as AY-HAD.`,
 
     awaiting_intent: `${baseContext}\nGreeting done. Wait silently for user to speak. Do NOT repeat the greeting.`,
 
@@ -46,7 +46,7 @@ function buildAllPrompts(memory) {
     message_complete: `${baseContext}\nUser confirmed. Data sent to webhook.\nSay EXACTLY: "Thank you. Your message has been received. Someone will call you back during business hours. Thank you for calling Ahad and Co. We're here to help. Goodbye."`,
 
     // ===== STEP 4: APPOINTMENT FLOW =====
-    calendar_check: `${baseContext}\nChecking calendar for earliest slot.\nSay: "Let me check our availability..." then check calendar.`,
+    calendar_check: `${baseContext}\nUser wants to book an appointment.\nSay EXACTLY: "Let me look at our calendar." Then wait.`,
 
     offer_slots: (() => {
       if (!memory.offered_slots || memory.offered_slots.length === 0) {

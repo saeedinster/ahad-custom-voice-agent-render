@@ -371,6 +371,26 @@ app.post('/voice', async (req, res) => {
       console.log(`[${callSid}] Greeting done, now awaiting user intent`);
     }
 
+    // ===== CALENDAR CHECK (runs even without speech - after "Let me check..." was said) =====
+    // If we're in calendar_check state and have history (meaning "Let me check..." was already said),
+    // actually check the calendar now
+    if (memory.flow_state === 'calendar_check' && memory.history.length > 0) {
+      console.log(`[${callSid}] Checking calendar availability...`);
+      const startDate = new Date();
+      const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
+
+      const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
+
+      if (slots && slots.length > 0) {
+        memory.offered_slots = slots;
+        memory.flow_state = 'offer_slots';
+        console.log(`[${callSid}] Found ${slots.length} calendar slots`);
+      } else {
+        console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
+        memory.flow_state = 'message_fallback_intro';
+      }
+    }
+
     // ===== MULTI-PATH STATE MACHINE =====
     if (userSpeech && userSpeech.trim()) {
       const lowerSpeech = userSpeech.toLowerCase();
@@ -433,22 +453,10 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'office_hours_question';
         }
         else if (memory.intent === 'appointment') {
-          // STRICT NO-WAIT RULE: Immediately start calendar check without waiting for confirmation
+          // Set state to calendar_check - agent will say "Let me check our availability..."
+          // Actual calendar check happens on next turn in calendar_check handler
           memory.flow_state = 'calendar_check';
-
-          // Immediately fetch slots (no pause, no confirmation phrase)
-          const startDate = new Date();
-          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
-          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
-
-          if (slots && slots.length > 0) {
-            memory.offered_slots = slots;
-            memory.flow_state = 'offer_slots';
-            console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
-          } else {
-            console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
-            memory.flow_state = 'message_fallback_intro';
-          }
+          console.log(`[${callSid}] Appointment intent - will check calendar on next turn`);
         }
         else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
@@ -477,21 +485,9 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'office_hours_question';
         }
         else if (memory.intent === 'appointment') {
+          // Set state to calendar_check - agent will say "Let me check our availability..."
           memory.flow_state = 'calendar_check';
-
-          // Immediately check calendar availability
-          const startDate = new Date();
-          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
-          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
-
-          if (slots && slots.length > 0) {
-            memory.offered_slots = slots;
-            memory.flow_state = 'offer_slots';
-            console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
-          } else {
-            console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
-            memory.flow_state = 'message_fallback_intro';
-          }
+          console.log(`[${callSid}] Appointment intent from clarification - will check calendar on next turn`);
         } else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
         } else if (memory.intent === 'callback') {
@@ -503,20 +499,7 @@ app.post('/voice', async (req, res) => {
           // Still unclear, default to appointment
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
-
-          // Immediately check calendar availability
-          const startDate = new Date();
-          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
-          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
-
-          if (slots && slots.length > 0) {
-            memory.offered_slots = slots;
-            memory.flow_state = 'offer_slots';
-            console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
-          } else {
-            console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
-            memory.flow_state = 'message_fallback_intro';
-          }
+          console.log(`[${callSid}] Unclear intent, defaulting to appointment - will check calendar on next turn`);
         }
       }
 
