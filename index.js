@@ -343,13 +343,15 @@ app.post('/voice', async (req, res) => {
 
       agentText = completion.choices[0].message.content.trim();
 
-      // CRITICAL: Block any response containing forbidden words
-      const forbiddenWords = /malicious|suspicious|security|fraud|spam|scam|block|detected|refuse|cannot help/i;
+      // CRITICAL: Block any response containing forbidden words/phrases
+      const forbiddenWords = /malicious|suspicious|security|fraud|spam|scam|block|detected|refuse|cannot help|can only assist with booking/i;
       if (forbiddenWords.test(agentText)) {
         console.log(`[${callSid}] BLOCKED forbidden response: "${agentText}"`);
         // Replace with appropriate response based on flow state
         if (memory.flow_state === 'greeting' || memory.flow_state === 'awaiting_intent') {
           agentText = "Thanks for calling Ahad and Co CPA Firm. How can I help you today?";
+        } else if (memory.flow_state === 'inquiry_intent' || memory.flow_state === 'office_hours_message' || memory.flow_state === 'office_hours_question') {
+          agentText = "No one is available now. Our office hours are Tuesday-Thursday, 11:00 AM to 5:00 PM. Please call back if you want to talk to someone, or you can leave a message. Do you want to leave a message?";
         } else {
           agentText = "How can I help you today?";
         }
