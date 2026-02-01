@@ -31,37 +31,6 @@ const calComApiKey = process.env.CALCOM_API_KEY;
 const calComEventTypeId = process.env.CALCOM_EVENT_TYPE_ID;
 const calComTimezone = process.env.CALCOM_TIMEZONE || 'America/New_York';
 
-// Security: Track calls by phone number to detect repeated/malicious calls
-const callTracker = {};  // { phoneNumber: { count: number, lastTimestamp: Date } }
-
-function checkMaliciousActivity(phoneNumber) {
-  const now = new Date();
-
-  if (!callTracker[phoneNumber]) {
-    callTracker[phoneNumber] = { count: 1, lastTimestamp: now };
-    return false;
-  }
-
-  const tracker = callTracker[phoneNumber];
-
-  // Check if multiple calls within short time (e.g., 3+ calls in 10 minutes)
-  const timeSinceLastCall = (now - tracker.lastTimestamp) / 1000 / 60; // minutes
-
-  tracker.count++;
-  tracker.lastTimestamp = now;
-
-  if (tracker.count >= 3 && timeSinceLastCall < 10) {
-    return true; // Malicious
-  }
-
-  // Reset count if more than 10 minutes since last call
-  if (timeSinceLastCall > 10) {
-    tracker.count = 1;
-  }
-
-  return false;
-}
-
 // ===== HELPER FUNCTIONS =====
 
 // Cal.com: Get available slots for next 2 weeks
@@ -194,8 +163,13 @@ function detectIntentByKeywords(speech) {
     return 'appointment';
   }
 
+  // CALL BACK patterns - user says they'll call back later (end call immediately)
+  if (/(i'll call back|call you back|call back later|i will call back|calling back)/i.test(lower)) {
+    return 'callback';  // End call with "No problem. Goodbye."
+  }
+
   // MESSAGE patterns
-  if (/(message|call back|leave.*message|voice.*mail|callback)/i.test(lower)) {
+  if (/(message|leave.*message|voice.*mail)/i.test(lower)) {
     return 'message';
   }
 
@@ -267,7 +241,8 @@ function buildSystemPrompt(memory) {
   const statePrompts = buildAllPrompts(memory);
   const baseContext = "You are a professional receptionist for Ahad and Co CPA Firm. " +
     "PRONUNCIATION: Say 'Ahad' as 'AY-HAD'. " +
-    "Be clear, professional, natural pace.";
+    "Be clear, professional, natural pace. " +
+    "ABSOLUTELY FORBIDDEN: NEVER say 'malicious', 'suspicious', 'security', 'fraud', 'spam', 'detected'. Always help every caller.";
 
   return {
     role: "system",
@@ -286,36 +261,6 @@ app.post('/voice', async (req, res) => {
   const callerPhone = req.body.From || 'unknown';
 
   console.log(`[${callSid}] Incoming call - Speech: "${userSpeech}"`);
-
-  // Security check for malicious activity
-  const isMalicious = checkMaliciousActivity(callerPhone);
-
-  if (isMalicious && !conversationMemory[callSid]) {
-    console.log(`[${callSid}] Malicious activity detected from ${callerPhone}`);
-
-    // Send alert to n8n
-    try {
-      await axios.post(n8nWebhook, {
-        type: "potential_malicious",
-        phone: callerPhone,
-        timestamp: new Date().toISOString(),
-        reason: "Multiple calls in short time period"
-      }, { timeout: 5000 });
-    } catch (error) {
-      console.error(`[${callSid}] Error sending malicious alert:`, error.message);
-    }
-
-    // End call immediately
-    twiml.say({
-      voice: "Polly.Joanna-Neural",
-      language: "en-US"
-    }, "Sorry, possible malicious activity detected. Goodbye.");
-    twiml.hangup();
-
-    res.type('text/xml');
-    res.send(twiml.toString());
-    return;
-  }
 
   if (!conversationMemory[callSid]) {
     conversationMemory[callSid] = {
@@ -355,6 +300,7 @@ app.post('/voice', async (req, res) => {
       phone_retry: 0,
 
       // Flags
+      greeting_done: false,
       booking_completed: false,
       message_sent: false,
       conversation_ended: false,
@@ -383,14 +329,32 @@ app.post('/voice', async (req, res) => {
       messages.push({ role: "user", content: "FIRST_CALL_START" });
     }
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: messages,
-      temperature: 0.7,
-      max_tokens: 150
-    });
+    // Skip AI generation if awaiting user intent and no speech (prevent greeting repetition)
+    if (memory.flow_state === 'awaiting_intent' && !userSpeech) {
+      agentText = '';  // Stay silent, just wait for user
+      console.log(`[${callSid}] Awaiting intent, no speech - staying silent`);
+    } else {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messages,
+        temperature: 0.7,
+        max_tokens: 150
+      });
 
-    agentText = completion.choices[0].message.content.trim();
+      agentText = completion.choices[0].message.content.trim();
+
+      // CRITICAL: Block any response containing forbidden words
+      const forbiddenWords = /malicious|suspicious|security|fraud|spam|scam|block|detected|refuse|cannot help/i;
+      if (forbiddenWords.test(agentText)) {
+        console.log(`[${callSid}] BLOCKED forbidden response: "${agentText}"`);
+        // Replace with appropriate response based on flow state
+        if (memory.flow_state === 'greeting' || memory.flow_state === 'awaiting_intent') {
+          agentText = "Thanks for calling Ahad and Co CPA Firm. How can I help you today?";
+        } else {
+          agentText = "How can I help you today?";
+        }
+      }
+    }
 
     // Save to history
     if (userSpeech) {
@@ -398,12 +362,19 @@ app.post('/voice', async (req, res) => {
     }
     memory.history.push({ role: "assistant", content: agentText });
 
+    // Mark greeting as done after first response (prevents repetition)
+    if (memory.flow_state === 'greeting' && !memory.greeting_done) {
+      memory.greeting_done = true;
+      memory.flow_state = 'awaiting_intent';  // Change state to wait for user response
+      console.log(`[${callSid}] Greeting done, now awaiting user intent`);
+    }
+
     // ===== MULTI-PATH STATE MACHINE =====
     if (userSpeech && userSpeech.trim()) {
       const lowerSpeech = userSpeech.toLowerCase();
 
-      // ===== INTENT DETECTION (from greeting) =====
-      if (memory.flow_state === 'greeting') {
+      // ===== INTENT DETECTION (from greeting or awaiting_intent) =====
+      if (memory.flow_state === 'greeting' || memory.flow_state === 'awaiting_intent') {
         try {
           // Try OpenAI function calling for intent detection
           const intentDetection = await openai.chat.completions.create({
@@ -480,6 +451,12 @@ app.post('/voice', async (req, res) => {
         else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
         }
+        else if (memory.intent === 'callback') {
+          // User says they'll call back - end call immediately
+          memory.flow_state = 'callback_end';
+          memory.conversation_ended = true;
+          console.log(`[${callSid}] User will call back - ending call`);
+        }
         else {
           memory.flow_state = 'intent_clarification';
         }
@@ -515,6 +492,11 @@ app.post('/voice', async (req, res) => {
           }
         } else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
+        } else if (memory.intent === 'callback') {
+          // User says they'll call back - end call immediately
+          memory.flow_state = 'callback_end';
+          memory.conversation_ended = true;
+          console.log(`[${callSid}] User will call back - ending call`);
         } else {
           // Still unclear, default to appointment
           memory.intent = 'appointment';
@@ -537,61 +519,64 @@ app.post('/voice', async (req, res) => {
       }
 
       // ===== OFFICE HOURS FLOW =====
+      // STRICT: NEVER route to booking/calendar from this flow - ONLY message or decline
       else if (memory.flow_state === 'office_hours_message') {
         // Check if user wants to leave a message
-        if (/yes|yeah|sure|ok|message|please/i.test(lowerSpeech)) {
+        if (/yes|yeah|sure|ok|okay|alright|message|please/i.test(lowerSpeech)) {
           memory.flow_state = 'message_first_name';
+          console.log(`[${callSid}] User agreed to leave message`);
         }
         // Check if user is declining or wants to call back
-        else if (/no|nope|not|call back|later/i.test(lowerSpeech)) {
+        else if (/no|nope|not|call back|later|goodbye|bye|hang up/i.test(lowerSpeech)) {
           memory.flow_state = 'office_hours_declined';
           memory.conversation_ended = true;
+          console.log(`[${callSid}] User declined message - ending call`);
         }
-        // If user repeats "speak to someone", re-explain and ask again
+        // If user repeats "speak to someone", re-explain (stay in same state)
         else if (/(speak|talk) (to|with)|someone|person/i.test(lowerSpeech)) {
-          // Stay in office_hours_message state to ask again
           memory.flow_state = 'office_hours_message';
+          console.log(`[${callSid}] User still wants to speak to someone - re-explaining`);
         }
-        // Default: assume they want to leave a message if unclear
+        // Default: assume they want to leave a message (NEVER route to booking)
         else {
           memory.flow_state = 'message_first_name';
+          console.log(`[${callSid}] Unclear response, defaulting to message flow`);
         }
       }
 
       // ===== NEW: INQUIRY INTENT HANDLER =====
+      // STRICT: NEVER route to booking/calendar from this flow - ONLY message or decline
       else if (memory.flow_state === 'inquiry_intent') {
-        if (/yes|yeah|sure|ok|message|please/i.test(lowerSpeech)) {
+        if (/yes|yeah|sure|ok|okay|alright|message|please/i.test(lowerSpeech)) {
+          // User wants to leave a message
           memory.flow_state = 'message_first_name';
-        } else if (/no|nope|not|call back|later/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User agreed to leave message`);
+        } else if (/no|nope|not|call back|later|goodbye|bye|hang up/i.test(lowerSpeech)) {
+          // User declines - say "Thanks for calling. Goodbye."
           memory.flow_state = 'office_hours_declined';
           memory.conversation_ended = true;
+          console.log(`[${callSid}] User declined message - ending call`);
         } else {
-          // Default: assume they want to leave a message
+          // Default: assume they want to leave a message (NEVER route to booking)
           memory.flow_state = 'message_first_name';
+          console.log(`[${callSid}] Unclear response in inquiry, defaulting to message flow`);
         }
       }
 
       // ===== NEW: OFFICE HOURS QUESTION HANDLER =====
+      // STRICT: NEVER route to booking/calendar from this flow - ONLY message or decline
       else if (memory.flow_state === 'office_hours_question') {
-        if (/(message|callback|call back)/i.test(lowerSpeech)) {
+        if (/yes|yeah|sure|ok|message|please|callback|call back/i.test(lowerSpeech)) {
+          // User wants to leave a message
           memory.flow_state = 'message_first_name';
-        } else if (/(appointment|book|schedule|consultation)/i.test(lowerSpeech)) {
-          memory.flow_state = 'calendar_check';
-
-          // Fetch slots immediately
-          const startDate = new Date();
-          const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-          const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
-
-          if (slots && slots.length > 0) {
-            memory.offered_slots = slots;
-            memory.flow_state = 'offer_slots';
-          } else {
-            memory.flow_state = 'message_first_name';
-          }
+        } else if (/no|nope|not|later|goodbye|bye/i.test(lowerSpeech)) {
+          // User declines
+          memory.flow_state = 'office_hours_declined';
+          memory.conversation_ended = true;
         } else {
-          // Unclear, ask again
-          memory.flow_state = 'office_hours_question';
+          // Unclear - default to message flow (NEVER route to booking)
+          memory.flow_state = 'message_first_name';
+          console.log(`[${callSid}] Unclear response in office_hours_question, defaulting to message flow`);
         }
       }
 
@@ -616,72 +601,61 @@ app.post('/voice', async (req, res) => {
       // ===== SLOT OFFER & NEGOTIATION =====
       else if (memory.flow_state === 'offer_slots') {
         const acceptedSlot = detectSlotAcceptance(userSpeech, memory.offered_slots);
-
         if (acceptedSlot) {
           memory.selected_slot = acceptedSlot.displayText;
           memory.selected_slot_iso = acceptedSlot.iso;
           memory.flow_state = 'appointment_first_name';
           console.log(`[${callSid}] Slot accepted: ${memory.selected_slot}`);
         } else {
-          memory.slot_offer_attempt++;
-          console.log(`[${callSid}] Slot rejected (attempt ${memory.slot_offer_attempt}/4)`);
+          // Determine if user explicitly rejected the offered slots
+          const rejectionPattern = /(no|nope|not|don't|none|neither|doesn't work|that won't work|no thanks)/i;
+          const timePreferencePattern = /(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|morning|afternoon|evening|next week|next month|at \d{1,2}|:\d{2})/i;
 
-          if (memory.slot_offer_attempt >= 4) {
-            // After 4 rejections, switch to message flow
-            memory.flow_state = 'message_fallback_intro';
-            console.log(`[${callSid}] Max slot attempts reached, switching to message flow`);
-          } else {
-            // Immediately re-check calendar for more slots (no asking for preferred time)
+          // If the caller proactively gave a preferred time, capture it and re-check availability
+          if (timePreferencePattern.test(userSpeech.toLowerCase())) {
+            memory.user_preferred_time = userSpeech.trim();
             memory.flow_state = 'calendar_check';
+            console.log(`[${callSid}] Caller provided preferred time: ${memory.user_preferred_time} - re-checking availability`);
+          }
+          // If explicit rejection, ask for preferred time immediately
+          else if (rejectionPattern.test(userSpeech.toLowerCase())) {
+            memory.slot_offer_attempt++;
+            console.log(`[${callSid}] Slot rejected (attempt ${memory.slot_offer_attempt}/4)`);
 
-            // Fetch next batch of slots immediately
-            const startDate = new Date();
-            const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
-            const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
-
-            if (slots && slots.length > 0) {
-              // Filter out already offered slots to show new options
-              const newSlots = slots.filter(slot =>
-                !memory.offered_slots.some(offered => offered.iso === slot.iso)
-              );
-
-              if (newSlots.length > 0) {
-                memory.offered_slots = newSlots;
-                memory.flow_state = 'offer_slots';
-                console.log(`[${callSid}] Re-offering ${newSlots.length} different calendar slots`);
-              } else {
-                // No new slots available, switch to message flow
-                memory.flow_state = 'message_fallback_intro';
-                console.log(`[${callSid}] No additional slots available, switching to message flow`);
-              }
-            } else {
+            if (memory.slot_offer_attempt >= 4) {
+              // After 4 explicit rejections, switch to message flow
               memory.flow_state = 'message_fallback_intro';
-              console.log(`[${callSid}] No calendar availability, switching to message flow`);
+              console.log(`[${callSid}] Max slot attempts reached, switching to message flow`);
+            } else {
+              // IMMEDIATELY ask for preferred time after ANY rejection
+              memory.flow_state = 'ask_preferred_time';
+              console.log(`[${callSid}] Asking caller for preferred time`);
             }
+          }
+          // If the response was neither an explicit rejection nor a time preference, assume unclear and re-offer without incrementing attempts
+          else {
+            console.log(`[${callSid}] Unclear response during slot offer; re-offering without counting as rejection`);
+            memory.flow_state = 'offer_slots';
           }
         }
       }
 
+      // Handle caller-provided preferred time after slot rejections
+      else if (memory.flow_state === 'ask_preferred_time') {
+        // Capture caller's preferred time phrase and re-run availability search
+        memory.user_preferred_time = userSpeech.trim();
+        memory.flow_state = 'calendar_check';
+        console.log(`[${callSid}] Caller preferred time received: ${memory.user_preferred_time}`);
+      }
+
       // ===== APPOINTMENT DATA COLLECTION =====
       else if (memory.flow_state === 'appointment_first_name') {
+        // Accept first name on first attempt (do not repeat question multiple times)
         const extracted = extractName(userSpeech);
-        if (extracted && extracted.length > 0) {
-          memory.first_name = extracted;
-          memory.flow_state = 'appointment_last_name';
-          memory.first_name_retry = 0; // Reset counter
-          console.log(`[${callSid}] Appointment first_name: ${memory.first_name}`);
-        } else {
-          memory.first_name_retry++;
-          console.log(`[${callSid}] Invalid first name, retry ${memory.first_name_retry}/2`);
-
-          // After 2 failed attempts, just accept whatever they said
-          if (memory.first_name_retry >= 2) {
-            memory.first_name = userSpeech.trim();
-            memory.flow_state = 'appointment_last_name';
-            console.log(`[${callSid}] Accepting name after retries: ${memory.first_name}`);
-          }
-          // Stay in appointment_first_name state to ask again
-        }
+        memory.first_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
+        memory.flow_state = 'appointment_last_name';
+        memory.first_name_retry = 0; // Reset counter
+        console.log(`[${callSid}] Appointment first_name recorded: ${memory.first_name}`);
       }
 
       else if (memory.flow_state === 'appointment_last_name') {
@@ -716,10 +690,11 @@ app.post('/voice', async (req, res) => {
           memory.email_retry++;
           console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
 
-          if (memory.email_retry >= 2) {
+          if (memory.email_retry >= 1) {
+            // Only allow one repeat for email, then accept whatever was said
             memory.email = userSpeech.trim();
             memory.flow_state = 'appointment_phone';
-            console.log(`[${callSid}] Accepting email after retries: ${memory.email}`);
+            console.log(`[${callSid}] Accepting email after retry: ${memory.email}`);
           }
         }
       }
@@ -787,14 +762,21 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_previous_client') {
-        if (/yes|yeah/i.test(lowerSpeech)) {
+        if (/yes|yeah|returning|client|previous/i.test(lowerSpeech)) {
           memory.previous_client = 'Yes';
-          memory.flow_state = 'appointment_call_reason';
+          memory.flow_state = 'appointment_welcome_back';
         } else {
           memory.previous_client = 'No';
           memory.flow_state = 'appointment_referral';
         }
         console.log(`[${callSid}] Previous client: ${memory.previous_client}`);
+      }
+
+      else if (memory.flow_state === 'appointment_welcome_back') {
+        // Just transitioned, no action needed - the prompt will say "Welcome back"
+        // Next user input will trigger call_reason question
+        memory.flow_state = 'appointment_call_reason';
+        console.log(`[${callSid}] Transitioning to call_reason (skipped referral_source)`);
       }
 
       else if (memory.flow_state === 'appointment_referral') {
@@ -811,24 +793,12 @@ app.post('/voice', async (req, res) => {
 
       // ===== MESSAGE DATA COLLECTION =====
       else if (memory.flow_state === 'message_first_name' || memory.flow_state === 'message_fallback_intro') {
+        // For message flow: collect first name, then ask for last name (per spec)
         const extracted = extractName(userSpeech);
-        if (extracted && extracted.length > 0) {
-          memory.first_name = extracted;
-          memory.flow_state = 'message_last_name';
-          memory.first_name_retry = 0;
-          console.log(`[${callSid}] Message first_name: ${memory.first_name}`);
-        } else {
-          memory.first_name_retry++;
-          console.log(`[${callSid}] Invalid first name, retry ${memory.first_name_retry}/2`);
-
-          if (memory.first_name_retry >= 2) {
-            memory.first_name = userSpeech.trim();
-            memory.flow_state = 'message_last_name';
-            console.log(`[${callSid}] Accepting name after retries: ${memory.first_name}`);
-          } else {
-            memory.flow_state = 'message_first_name'; // Explicitly stay in same state
-          }
-        }
+        memory.first_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
+        memory.first_name_retry = 0;
+        memory.flow_state = 'message_last_name';
+        console.log(`[${callSid}] Message first_name recorded: ${memory.first_name}`);
       }
 
       else if (memory.flow_state === 'message_last_name') {
@@ -882,25 +852,39 @@ app.post('/voice', async (req, res) => {
           memory.email_retry++;
           console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
 
-          if (memory.email_retry >= 2) {
+          if (memory.email_retry >= 1) {
+            // Only allow one repeat for message email, then accept whatever was said
             memory.email = userSpeech.trim();
             memory.flow_state = 'message_content';
-            console.log(`[${callSid}] Accepting email after retries: ${memory.email}`);
+            console.log(`[${callSid}] Accepting email after retry: ${memory.email}`);
           }
         }
       }
 
       // NEW: Message email repeat full state
       else if (memory.flow_state === 'message_email_repeat_full') {
-        // Just said the full email, now move to spelling username
-        memory.flow_state = 'message_email_spell_username';
-        memory.email_confirmation_stage = 'spelling';
-        console.log(`[${callSid}] Moving to spell username for message email: ${memory.email_spelled}`);
+        // User heard the full email read back - check if they confirm or correct
+        if (/yes|correct|right|yep|okay|ok/i.test(lowerSpeech)) {
+          // Confirmed, now spell the username
+          memory.flow_state = 'message_email_spell_username';
+          memory.email_confirmation_stage = 'spelling';
+          console.log(`[${callSid}] Moving to spell username for message email: ${memory.email_spelled}`);
+        } else if (/no|wrong|incorrect|repeat|again/i.test(lowerSpeech)) {
+          // Need to re-collect email
+          memory.email_spelled = null;
+          memory.flow_state = 'message_email';
+          console.log(`[${callSid}] Message email incorrect, restarting collection`);
+        } else {
+          // Unclear, assume they want to move to spelling
+          memory.flow_state = 'message_email_spell_username';
+          memory.email_confirmation_stage = 'spelling';
+          console.log(`[${callSid}] Unclear response, moving to spell username for: ${memory.email_spelled}`);
+        }
       }
 
       // NEW: Message email spelling username state
       else if (memory.flow_state === 'message_email_spell_username') {
-        // After spelling, ask if correct
+        // User has heard the spelling, now confirm the email is correct
         memory.flow_state = 'message_email_final_confirm';
         memory.email_confirmation_stage = 'confirm';
         console.log(`[${callSid}] Asking for message email confirmation`);
@@ -953,8 +937,8 @@ app.post('/voice', async (req, res) => {
           // Re-collect information
           memory.flow_state = 'message_first_name';
           memory.first_name = null;
-          memory.last_name = null;
           memory.phone = null;
+          memory.email = null;
           console.log(`[${callSid}] Message details incorrect, restarting collection`);
         } else {
           // Assume yes if unclear
@@ -966,9 +950,9 @@ app.post('/voice', async (req, res) => {
 
     // Regenerate response if flow state changed during state machine processing
     if (userSpeech && userSpeech.trim()) {
-      const regenerateStates = ['calendar_check', 'offer_slots', 'office_hours_message',
-                                'intent_clarification', 'message_first_name', 'appointment_first_name',
-                                'message_fallback_intro', 'message_confirm'];
+      const regenerateStates = ['calendar_check', 'offer_slots', 'office_hours_message', 'inquiry_intent',
+                                'intent_clarification', 'message_fallback_intro', 'message_confirm',
+                                'office_hours_question', 'ask_preferred_time'];
 
       if (regenerateStates.includes(memory.flow_state)) {
         const regenerateMessages = [buildSystemPrompt(memory)];
@@ -1071,7 +1055,8 @@ app.post('/voice', async (req, res) => {
         previous_client: memory.previous_client || "Unknown",
         intent: memory.intent,
         call_sid: callSid,
-        callback_requested: true
+        callback_requested: true,
+        duplicate_detected: false
       }, {
         timeout: 5000
       });
@@ -1083,13 +1068,32 @@ app.post('/voice', async (req, res) => {
     }
   }
 
+  // Guard against empty responses (silence prevention)
+  // BUT allow silence when awaiting_intent (user hasn't spoken yet after greeting)
+  if (!agentText || agentText.trim().length === 0) {
+    if (memory.flow_state === 'awaiting_intent') {
+      // Stay silent - waiting for user to speak first
+      console.log(`[${callSid}] Awaiting intent - staying silent`);
+    } else if (memory.flow_state === 'calendar_check' || memory.flow_state === 'offer_slots') {
+      agentText = "One moment please.";
+      console.log(`[${callSid}] Empty response in critical state, injecting filler`);
+    } else if (memory.flow_state === 'appointment_first_name' || memory.flow_state === 'appointment_last_name' ||
+               memory.flow_state === 'message_first_name' || memory.flow_state === 'message_last_name') {
+      agentText = "I didn't quite catch that. Could you please repeat?";
+      console.log(`[${callSid}] Empty response during data collection, requesting repeat`);
+    } else {
+      agentText = "Sorry, I'm having a technical issue. Please try again. Goodbye.";
+      console.log(`[${callSid}] Empty response, defaulting to error message`);
+    }
+  }
+
   // Check if conversation should end
   const shouldEnd =
     memory.flow_state === 'appointment_complete' ||
     memory.flow_state === 'message_complete' ||
     memory.flow_state === 'office_hours_declined' ||
-    memory.conversation_ended ||
-    agentText.toLowerCase().includes("goodbye");
+    memory.flow_state === 'callback_end' ||
+    memory.conversation_ended;
 
   // Generate and play audio (same logic for both continuing and ending)
   // Use Twilio TTS directly for more reliability (ElevenLabs can cause voice drops)
@@ -1099,7 +1103,8 @@ app.post('/voice', async (req, res) => {
       language: "en-US"
     }, agentText);
     console.log(`[${callSid}] Using Twilio TTS for goodbye`);
-  } else {
+  } else if (agentText && agentText.trim().length > 0) {
+    // Only speak if there's something to say
     const gather = twiml.gather({
       input: 'speech',
       action: '/voice',
@@ -1113,11 +1118,24 @@ app.post('/voice', async (req, res) => {
       language: "en-US"
     }, agentText);
     console.log(`[${callSid}] Using Twilio TTS`);
+  } else {
+    // No text to say - just gather speech silently (awaiting_intent)
+    twiml.gather({
+      input: 'speech',
+      action: '/voice',
+      method: 'POST',
+      speechTimeout: 'auto',
+      language: 'en-US',
+      speechModel: 'phone_call'
+    });
+    console.log(`[${callSid}] Silent gather - waiting for user speech`);
   }
 
   if (shouldEnd) {
     memory.conversation_ended = true;
     console.log(`[${callSid}] Conversation ended`);
+    // Add 0.5 second pause before hangup (per spec: "Say 'Goodbye', wait 0.5 seconds, end_call")
+    twiml.pause({ length: 0.5 });
     twiml.hangup();
   } else {
     // If no response after timeout, redirect to continue
