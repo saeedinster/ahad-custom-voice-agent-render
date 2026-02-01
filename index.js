@@ -293,6 +293,9 @@ app.post('/voice', async (req, res) => {
       email_spelled: null,              // Email during spelling confirmation
       email_confirmation_stage: null,   // Track which stage of confirmation
 
+      // Calendar check flag
+      calendar_check_announced: false,  // True after "Let me look at our calendar" is said
+
       // Retry counters for validation
       first_name_retry: 0,
       last_name_retry: 0,
@@ -371,23 +374,42 @@ app.post('/voice', async (req, res) => {
       console.log(`[${callSid}] Greeting done, now awaiting user intent`);
     }
 
-    // ===== CALENDAR CHECK (runs even without speech - after "Let me check..." was said) =====
-    // If we're in calendar_check state and have history (meaning "Let me check..." was already said),
-    // actually check the calendar now
-    if (memory.flow_state === 'calendar_check' && memory.history.length > 0) {
-      console.log(`[${callSid}] Checking calendar availability...`);
-      const startDate = new Date();
-      const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
+    // ===== CALENDAR CHECK (runs on SECOND request after "Let me look at our calendar" was said) =====
+    if (memory.flow_state === 'calendar_check') {
+      if (memory.calendar_check_announced) {
+        // Second request - actually check the calendar now
+        console.log(`[${callSid}] Checking calendar availability...`);
+        const startDate = new Date();
+        const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
 
-      const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
+        const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
 
-      if (slots && slots.length > 0) {
-        memory.offered_slots = slots;
-        memory.flow_state = 'offer_slots';
-        console.log(`[${callSid}] Found ${slots.length} calendar slots`);
+        if (slots && slots.length > 0) {
+          memory.offered_slots = slots;
+          memory.flow_state = 'offer_slots';
+          console.log(`[${callSid}] Found ${slots.length} calendar slots`);
+        } else {
+          console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
+          memory.flow_state = 'message_fallback_intro';
+        }
+        memory.calendar_check_announced = false; // Reset flag
+
+        // Regenerate response for the new state (offer_slots or message_fallback_intro)
+        const regenerateMessages = [buildSystemPrompt(memory)];
+        regenerateMessages.push({ role: "user", content: "Continue." });
+        const regeneratedCompletion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: regenerateMessages,
+          temperature: 0.7,
+          max_tokens: 150
+        });
+        agentText = regeneratedCompletion.choices[0].message.content.trim();
+        memory.history.push({ role: "assistant", content: agentText });
+        console.log(`[${callSid}] Regenerated response for ${memory.flow_state}: ${agentText}`);
       } else {
-        console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
-        memory.flow_state = 'message_fallback_intro';
+        // First request - set flag, agent will say "Let me look at our calendar"
+        memory.calendar_check_announced = true;
+        console.log(`[${callSid}] Will say "Let me look at our calendar" - check on next turn`);
       }
     }
 
@@ -928,7 +950,7 @@ app.post('/voice', async (req, res) => {
 
     // Regenerate response if flow state changed during state machine processing
     if (userSpeech && userSpeech.trim()) {
-      const regenerateStates = ['calendar_check', 'offer_slots', 'office_hours_message', 'inquiry_intent',
+      const regenerateStates = ['offer_slots', 'office_hours_message', 'inquiry_intent',
                                 'intent_clarification', 'message_fallback_intro', 'message_confirm',
                                 'office_hours_question', 'ask_preferred_time', 'appointment_email_confirm',
                                 'message_email_confirm', 'appointment_confirm'];
