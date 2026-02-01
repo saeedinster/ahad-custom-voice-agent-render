@@ -35,11 +35,13 @@ function buildAllPrompts(memory) {
 
     message_phone: `${baseContext}\nCollect phone number.\nSay EXACTLY: "What is the best phone number to reach you?"`,
 
-    message_email: `${baseContext}\nCollect email address.\nSay EXACTLY: "And your email address, please spell it slowly letter by letter."`,
+    message_email: `${baseContext}\nCollect email address.\nSay EXACTLY: "And your email address? Please spell it out slowly, letter by letter."`,
+
+    message_email_confirm: `${baseContext}\nRead the email back SLOWLY and CLEARLY. Convert to speech format.\nSay: "Let me read that back. ${memory.email_spelled ? memory.email_spelled.replace(/@/g, ' at ').replace(/\./g, ' dot ') : 'your email'}. Is that correct?"\nSpeak slowly. Wait for yes or no.`,
 
     message_content: `${baseContext}\nCollect reason for call.\nSay EXACTLY: "What is the reason for your call?"`,
 
-    message_confirm: `${baseContext}\nConfirm collected data.\nSay EXACTLY: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}. Is that correct?"`,
+    message_confirm: `${baseContext}\nConfirm collected data.\nSay: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}, email ${memory.email ? memory.email.replace(/@/g, ' at ').replace(/\./g, ' dot ') : ''}. Is that correct?"`,
 
     message_complete: `${baseContext}\nUser confirmed. Data sent to webhook.\nSay EXACTLY: "Thank you. Your message has been received. Someone will call you back during business hours. Thank you for calling Ahad and Co. We're here to help. Goodbye."`,
 
@@ -65,7 +67,9 @@ function buildAllPrompts(memory) {
 
     appointment_phone: `${baseContext}\nQuestion 3 of 7.\nSay EXACTLY: "And your phone number? Please speak slowly."`,
 
-    appointment_email: `${baseContext}\nQuestion 4 of 7.\nSay EXACTLY: "And your email address, please spell it slowly letter by letter."`,
+    appointment_email: `${baseContext}\nQuestion 4 of 7.\nSay EXACTLY: "And your email address? Please spell it out slowly, letter by letter."`,
+
+    appointment_email_confirm: `${baseContext}\nRead the email back SLOWLY and CLEARLY. This is CRITICAL for appointment confirmations.\nSay: "Let me read that back to make sure I have it correct. ${memory.email_spelled ? memory.email_spelled.replace(/@/g, ' at ').replace(/\./g, ' dot ') : 'your email'}. Is that correct?"\nSpeak slowly and clearly. Wait for yes or no.`,
 
     appointment_previous_client: `${baseContext}\nQuestion 5 of 7.\nSay EXACTLY: "Are you a new client or a previous client with Ahad and Co?"`,
 
@@ -75,7 +79,7 @@ function buildAllPrompts(memory) {
 
     appointment_call_reason: `${baseContext}\nQuestion 7 of 7.\nSay EXACTLY: "What is the reason for your call?"`,
 
-    appointment_confirm: `${baseContext}\nConfirm all collected data.\nSay: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}. Your appointment is for ${memory.selected_slot}. Is that correct?"`,
+    appointment_confirm: `${baseContext}\nConfirm all collected data.\nSay: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}, email ${memory.email ? memory.email.replace(/@/g, ' at ').replace(/\./g, ' dot ') : ''}. Your appointment is scheduled for ${memory.selected_slot}. Is that correct?"`,
 
     appointment_complete: `${baseContext}\nBooking confirmed. Data sent to webhook.\nSay EXACTLY: "Your appointment is scheduled for ${memory.selected_slot}. A confirmation has been sent to ${memory.email} and a text to ${memory.phone}. Thank you for calling Ahad and Co. We're here to help. Goodbye."`,
 
@@ -86,19 +90,6 @@ function buildAllPrompts(memory) {
 
     // ===== STEP 7: END =====
     end_call: `${baseContext}\nSay EXACTLY: "Thank you for calling Ahad and Co. We're here to help. Goodbye."`,
-
-    // ===== EMAIL CONFIRMATION STATES =====
-    message_email_repeat_full: `${baseContext}\nRepeat the email back slowly ONCE: "${memory.email_spelled || memory.email}". Then ask: "Is that correct?"`,
-
-    message_email_spell_username: `${baseContext}\nSpell ONLY the username part (before @) one letter at a time. Pause after each letter.`,
-
-    message_email_final_confirm: `${baseContext}\nRepeat full email slowly ONCE: "${memory.email_spelled || memory.email}". Then say: "Is that correct?"`,
-
-    appointment_email_repeat_full: `${baseContext}\nRepeat the email back slowly ONCE: "${memory.email_spelled || memory.email}". Then ask: "Is that correct?"`,
-
-    appointment_email_spell_username: `${baseContext}\nSpell ONLY the username part (before @) one letter at a time. Pause after each letter.`,
-
-    appointment_email_final_confirm: `${baseContext}\nRepeat full email slowly ONCE: "${memory.email_spelled || memory.email}". Then say: "Is that correct?"`,
 
     // ===== UTILITY =====
     tool_wait_filler: `${baseContext}\nSay ONCE only: "One moment please..." Do NOT repeat.`,

@@ -663,7 +663,7 @@ app.post('/voice', async (req, res) => {
         const extracted = extractName(userSpeech);
         if (extracted && extracted.length > 0) {
           memory.last_name = extracted;
-          memory.flow_state = 'appointment_email';
+          memory.flow_state = 'appointment_phone';  // FIXED: phone before email
           memory.last_name_retry = 0;
           console.log(`[${callSid}] Appointment last_name: ${memory.last_name}`);
         } else {
@@ -672,72 +672,57 @@ app.post('/voice', async (req, res) => {
 
           if (memory.last_name_retry >= 2) {
             memory.last_name = userSpeech.trim();
-            memory.flow_state = 'appointment_email';
+            memory.flow_state = 'appointment_phone';  // FIXED: phone before email
             console.log(`[${callSid}] Accepting last name after retries: ${memory.last_name}`);
           }
         }
       }
 
       else if (memory.flow_state === 'appointment_email') {
-        // Initial email capture
+        // Capture email from user
         const extracted = extractEmail(userSpeech);
         if (extracted && extracted.length > 0) {
           memory.email_spelled = extracted;
-          memory.email_confirmation_stage = 'repeat_full';
-          memory.flow_state = 'appointment_email_repeat_full';
+          memory.flow_state = 'appointment_email_confirm';  // Go to confirmation
           memory.email_retry = 0;
           console.log(`[${callSid}] Appointment email captured: ${memory.email_spelled}`);
         } else {
           memory.email_retry++;
           console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
 
-          if (memory.email_retry >= 1) {
-            // Only allow one repeat for email, then accept whatever was said
-            memory.email = userSpeech.trim();
-            memory.flow_state = 'appointment_phone';
-            console.log(`[${callSid}] Accepting email after retry: ${memory.email}`);
+          if (memory.email_retry >= 2) {
+            // Accept whatever was said after 2 retries
+            memory.email_spelled = userSpeech.trim();
+            memory.flow_state = 'appointment_email_confirm';
+            console.log(`[${callSid}] Accepting email after retries: ${memory.email_spelled}`);
           }
         }
       }
 
-      // NEW: Email repeat full state
-      else if (memory.flow_state === 'appointment_email_repeat_full') {
-        // Just said the full email, now move to spelling username
-        memory.flow_state = 'appointment_email_spell_username';
-        memory.email_confirmation_stage = 'spelling';
-        console.log(`[${callSid}] Moving to spell username for email: ${memory.email_spelled}`);
-      }
-
-      // NEW: Email spelling username state
-      else if (memory.flow_state === 'appointment_email_spell_username') {
-        // After spelling, ask if correct
-        memory.flow_state = 'appointment_email_final_confirm';
-        memory.email_confirmation_stage = 'confirm';
-        console.log(`[${callSid}] Asking for email confirmation`);
-      }
-
-      // NEW: Email final confirmation
-      else if (memory.flow_state === 'appointment_email_final_confirm') {
-        if (/yes|correct|right|yep/i.test(lowerSpeech)) {
+      // SIMPLIFIED: Email confirmation - agent reads back email, waits for yes/no
+      else if (memory.flow_state === 'appointment_email_confirm') {
+        if (/yes|yeah|correct|right|yep|that's right|that is correct/i.test(lowerSpeech)) {
+          // Email confirmed - proceed to next question
           memory.email = memory.email_spelled;
-          memory.flow_state = 'appointment_phone';
+          memory.flow_state = 'appointment_previous_client';  // Question 5
           console.log(`[${callSid}] Email confirmed: ${memory.email}`);
-        } else if (/no|wrong|incorrect/i.test(lowerSpeech)) {
+        } else if (/no|wrong|incorrect|not right/i.test(lowerSpeech)) {
           // Re-collect email
           memory.email_spelled = null;
+          memory.email_retry = 0;
           memory.flow_state = 'appointment_email';
           console.log(`[${callSid}] Email incorrect, restarting collection`);
         } else {
-          // Check if user provided correction
+          // Check if user provided a correction directly
           const corrected = extractEmail(userSpeech);
           if (corrected) {
             memory.email_spelled = corrected;
-            memory.flow_state = 'appointment_email_repeat_full';
+            // Stay in confirm state to read back the corrected email
             console.log(`[${callSid}] Email corrected to: ${corrected}`);
           } else {
-            // Unclear, assume yes
+            // Unclear response - assume confirmed to avoid loop
             memory.email = memory.email_spelled;
-            memory.flow_state = 'appointment_phone';
+            memory.flow_state = 'appointment_previous_client';
             console.log(`[${callSid}] Unclear response, assuming email confirmed: ${memory.email}`);
           }
         }
@@ -747,7 +732,7 @@ app.post('/voice', async (req, res) => {
         const extracted = userSpeech.replace(/\D/g, '');
         if (extracted && extracted.length >= 10) {
           memory.phone = extracted;
-          memory.flow_state = 'appointment_previous_client';
+          memory.flow_state = 'appointment_email';  // FIXED: now goes to email (question 4)
           memory.phone_retry = 0;
           console.log(`[${callSid}] Appointment phone: ${memory.phone}`);
         } else {
@@ -756,7 +741,7 @@ app.post('/voice', async (req, res) => {
 
           if (memory.phone_retry >= 2) {
             memory.phone = extracted || userSpeech.replace(/\D/g, '');
-            memory.flow_state = 'appointment_previous_client';
+            memory.flow_state = 'appointment_email';  // FIXED: now goes to email
             console.log(`[${callSid}] Accepting phone after retries: ${memory.phone}`);
           }
         }
@@ -878,76 +863,48 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'message_email') {
-        // Initial email capture
+        // Capture email from user
         const extracted = extractEmail(userSpeech);
         if (extracted && extracted.length > 0) {
           memory.email_spelled = extracted;
-          memory.email_confirmation_stage = 'repeat_full';
-          memory.flow_state = 'message_email_repeat_full';
+          memory.flow_state = 'message_email_confirm';  // Go to confirmation
           memory.email_retry = 0;
           console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
         } else {
           memory.email_retry++;
           console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
 
-          if (memory.email_retry >= 1) {
-            // Only allow one repeat for message email, then accept whatever was said
-            memory.email = userSpeech.trim();
-            memory.flow_state = 'message_content';  // Continue to reason for call
-            console.log(`[${callSid}] Accepting email after retry: ${memory.email}`);
+          if (memory.email_retry >= 2) {
+            // Accept whatever was said after 2 retries
+            memory.email_spelled = userSpeech.trim();
+            memory.flow_state = 'message_email_confirm';
+            console.log(`[${callSid}] Accepting email after retries: ${memory.email_spelled}`);
           }
         }
       }
 
-      // NEW: Message email repeat full state
-      else if (memory.flow_state === 'message_email_repeat_full') {
-        // User heard the full email read back - check if they confirm or correct
-        if (/yes|correct|right|yep|okay|ok/i.test(lowerSpeech)) {
-          // Confirmed, now spell the username
-          memory.flow_state = 'message_email_spell_username';
-          memory.email_confirmation_stage = 'spelling';
-          console.log(`[${callSid}] Moving to spell username for message email: ${memory.email_spelled}`);
-        } else if (/no|wrong|incorrect|repeat|again/i.test(lowerSpeech)) {
-          // Need to re-collect email
-          memory.email_spelled = null;
-          memory.flow_state = 'message_email';
-          console.log(`[${callSid}] Message email incorrect, restarting collection`);
-        } else {
-          // Unclear, assume they want to move to spelling
-          memory.flow_state = 'message_email_spell_username';
-          memory.email_confirmation_stage = 'spelling';
-          console.log(`[${callSid}] Unclear response, moving to spell username for: ${memory.email_spelled}`);
-        }
-      }
-
-      // NEW: Message email spelling username state
-      else if (memory.flow_state === 'message_email_spell_username') {
-        // User has heard the spelling, now confirm the email is correct
-        memory.flow_state = 'message_email_final_confirm';
-        memory.email_confirmation_stage = 'confirm';
-        console.log(`[${callSid}] Asking for message email confirmation`);
-      }
-
-      // NEW: Message email final confirmation
-      else if (memory.flow_state === 'message_email_final_confirm') {
-        if (/yes|correct|right|yep/i.test(lowerSpeech)) {
+      // SIMPLIFIED: Message email confirmation - agent reads back, waits for yes/no
+      else if (memory.flow_state === 'message_email_confirm') {
+        if (/yes|yeah|correct|right|yep|that's right|that is correct/i.test(lowerSpeech)) {
+          // Email confirmed - proceed to reason for call
           memory.email = memory.email_spelled;
           memory.flow_state = 'message_content';
           console.log(`[${callSid}] Message email confirmed: ${memory.email}`);
-        } else if (/no|wrong|incorrect/i.test(lowerSpeech)) {
+        } else if (/no|wrong|incorrect|not right/i.test(lowerSpeech)) {
           // Re-collect email
           memory.email_spelled = null;
+          memory.email_retry = 0;
           memory.flow_state = 'message_email';
           console.log(`[${callSid}] Message email incorrect, restarting collection`);
         } else {
-          // Check if user provided correction
+          // Check if user provided a correction directly
           const corrected = extractEmail(userSpeech);
           if (corrected) {
             memory.email_spelled = corrected;
-            memory.flow_state = 'message_email_repeat_full';
+            // Stay in confirm state to read back the corrected email
             console.log(`[${callSid}] Message email corrected to: ${corrected}`);
           } else {
-            // Unclear, assume yes
+            // Unclear response - assume confirmed to avoid loop
             memory.email = memory.email_spelled;
             memory.flow_state = 'message_content';
             console.log(`[${callSid}] Unclear response, assuming message email confirmed: ${memory.email}`);
@@ -990,7 +947,8 @@ app.post('/voice', async (req, res) => {
     if (userSpeech && userSpeech.trim()) {
       const regenerateStates = ['calendar_check', 'offer_slots', 'office_hours_message', 'inquiry_intent',
                                 'intent_clarification', 'message_fallback_intro', 'message_confirm',
-                                'office_hours_question', 'ask_preferred_time'];
+                                'office_hours_question', 'ask_preferred_time', 'appointment_email_confirm',
+                                'message_email_confirm', 'appointment_confirm'];
 
       if (regenerateStates.includes(memory.flow_state)) {
         const regenerateMessages = [buildSystemPrompt(memory)];
