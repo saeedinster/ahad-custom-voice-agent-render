@@ -37,7 +37,9 @@ function buildAllPrompts(memory) {
 
     message_email: `${baseContext}\nCollect email address.\nSay EXACTLY: "And your email address, please spell it slowly letter by letter."`,
 
-    message_confirm: `${baseContext}\nConfirm collected data.\nSay EXACTLY: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}, email ${memory.email}. Is that correct?"`,
+    message_content: `${baseContext}\nCollect reason for call.\nSay EXACTLY: "What is the reason for your call?"`,
+
+    message_confirm: `${baseContext}\nConfirm collected data.\nSay EXACTLY: "Let me confirm: Your name is ${memory.first_name} ${memory.last_name}, phone ${memory.phone}. Is that correct?"`,
 
     message_complete: `${baseContext}\nUser confirmed. Data sent to webhook.\nSay EXACTLY: "Thank you. Your message has been received. Someone will call you back during business hours. Thank you for calling Ahad and Co. We're here to help. Goodbye."`,
 
@@ -86,7 +88,15 @@ function buildAllPrompts(memory) {
     // ===== EMAIL CONFIRMATION STATES =====
     message_email_repeat_full: `${baseContext}\nRepeat the email back slowly ONCE: "${memory.email_spelled || memory.email}". Then ask: "Is that correct?"`,
 
+    message_email_spell_username: `${baseContext}\nSpell ONLY the username part (before @) one letter at a time. Pause after each letter.`,
+
+    message_email_final_confirm: `${baseContext}\nRepeat full email slowly ONCE: "${memory.email_spelled || memory.email}". Then say: "Is that correct?"`,
+
     appointment_email_repeat_full: `${baseContext}\nRepeat the email back slowly ONCE: "${memory.email_spelled || memory.email}". Then ask: "Is that correct?"`,
+
+    appointment_email_spell_username: `${baseContext}\nSpell ONLY the username part (before @) one letter at a time. Pause after each letter.`,
+
+    appointment_email_final_confirm: `${baseContext}\nRepeat full email slowly ONCE: "${memory.email_spelled || memory.email}". Then say: "Is that correct?"`,
 
     // ===== UTILITY =====
     tool_wait_filler: `${baseContext}\nSay ONCE only: "One moment please..." Do NOT repeat.`,

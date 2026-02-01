@@ -857,7 +857,7 @@ app.post('/voice', async (req, res) => {
           if (memory.email_retry >= 1) {
             // Only allow one repeat for message email, then accept whatever was said
             memory.email = userSpeech.trim();
-            memory.flow_state = 'message_content';
+            memory.flow_state = 'message_content';  // Continue to reason for call
             console.log(`[${callSid}] Accepting email after retry: ${memory.email}`);
           }
         }
