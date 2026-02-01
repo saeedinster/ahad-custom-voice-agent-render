@@ -1078,13 +1078,41 @@ app.post('/voice', async (req, res) => {
     } else if (memory.flow_state === 'calendar_check' || memory.flow_state === 'offer_slots') {
       agentText = "One moment please.";
       console.log(`[${callSid}] Empty response in critical state, injecting filler`);
-    } else if (memory.flow_state === 'appointment_first_name' || memory.flow_state === 'appointment_last_name' ||
-               memory.flow_state === 'message_first_name' || memory.flow_state === 'message_last_name') {
-      agentText = "I didn't quite catch that. Could you please repeat?";
-      console.log(`[${callSid}] Empty response during data collection, requesting repeat`);
+    } else if (memory.flow_state === 'appointment_first_name' || memory.flow_state === 'message_first_name') {
+      agentText = "May I have your first name, please?";
+      console.log(`[${callSid}] Empty response, asking for first name`);
+    } else if (memory.flow_state === 'appointment_last_name' || memory.flow_state === 'message_last_name') {
+      agentText = "And your last name?";
+      console.log(`[${callSid}] Empty response, asking for last name`);
+    } else if (memory.flow_state === 'appointment_phone' || memory.flow_state === 'message_phone') {
+      agentText = "What is the best phone number to reach you?";
+      console.log(`[${callSid}] Empty response, asking for phone`);
+    } else if (memory.flow_state === 'appointment_email' || memory.flow_state === 'message_email') {
+      agentText = "And your email address? Please spell it out slowly.";
+      console.log(`[${callSid}] Empty response, asking for email`);
+    } else if (memory.flow_state === 'appointment_email_confirm' || memory.flow_state === 'message_email_confirm') {
+      agentText = "Is that email correct?";
+      console.log(`[${callSid}] Empty response, confirming email`);
+    } else if (memory.flow_state === 'message_content' || memory.flow_state === 'appointment_call_reason') {
+      agentText = "What is the reason for your call?";
+      console.log(`[${callSid}] Empty response, asking for reason`);
+    } else if (memory.flow_state === 'message_confirm' || memory.flow_state === 'appointment_confirm') {
+      agentText = "Is that information correct?";
+      console.log(`[${callSid}] Empty response, confirming info`);
+    } else if (memory.flow_state === 'inquiry_intent' || memory.flow_state === 'office_hours_message' ||
+               memory.flow_state === 'office_hours_question' || memory.flow_state === 'message_fallback_intro') {
+      agentText = "Would you like to leave a message?";
+      console.log(`[${callSid}] Empty response, asking about message`);
+    } else if (memory.flow_state === 'appointment_previous_client') {
+      agentText = "Are you a new client or a previous client with Ahad and Co?";
+      console.log(`[${callSid}] Empty response, asking about client status`);
+    } else if (memory.flow_state === 'appointment_referral') {
+      agentText = "How did you hear about us?";
+      console.log(`[${callSid}] Empty response, asking for referral`);
     } else {
-      agentText = "Sorry, I'm having a technical issue. Please try again. Goodbye.";
-      console.log(`[${callSid}] Empty response, defaulting to error message`);
+      // Fallback - ask to repeat instead of ending call
+      agentText = "I didn't quite catch that. Could you please repeat?";
+      console.log(`[${callSid}] Empty response, asking to repeat`);
     }
   }
 
