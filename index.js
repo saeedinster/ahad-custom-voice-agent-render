@@ -373,15 +373,49 @@ app.post('/voice', async (req, res) => {
       messages.push({ role: "user", content: "FIRST_CALL_START" });
     }
 
-    // Skip AI generation if awaiting user intent and no speech (prevent greeting repetition)
-    if (memory.flow_state === 'awaiting_intent' && !userSpeech) {
+    // ===== HARDCODED RESPONSES FOR DATA COLLECTION - DO NOT USE AI =====
+    // This prevents AI from improvising during simple data collection
+    const hardcodedStates = {
+      'greeting': "Thanks for calling Ahad and Co CPA Firm. How can I help you today?",
+      'message_first_name': "May I have your first name, please?",
+      'message_last_name': "And your last name?",
+      'message_phone': "What is the best phone number to reach you?",
+      'message_email': "And your email address?",
+      'message_content': "What is the reason for your call?",
+      'appointment_first_name': "May I have your first name, please?",
+      'appointment_last_name': "And your last name?",
+      'appointment_phone': "And your phone number?",
+      'appointment_email': "And your email address?",
+      'appointment_previous_client': "Are you a new client or a previous client with Ahad and Co?",
+      'appointment_referral': "How did you hear about us?",
+      'appointment_call_reason': "What is the reason for your call?",
+      'appointment_welcome_back': "Welcome back! What is the reason for your call?",
+      'calendar_check': "Let me look at our calendar.",
+      'inquiry_intent': "No one is available right now. Our office hours are Tuesday to Thursday from 11:00 AM to 5:00 PM. Would you like to leave a message now or call back during business hours?",
+      'office_hours_message': "No one is available right now. Our office hours are Tuesday to Thursday from 11:00 AM to 5:00 PM. Would you like to leave a message now or call back during business hours?",
+      'office_hours_question': "Our office hours are Tuesday to Thursday from 11:00 AM to 5:00 PM. Would you like to leave a message or call back during business hours?",
+      'message_fallback_intro': "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?",
+      'callback_end': "No problem. Thank you for calling Ahad and Co. We're here to help. Goodbye.",
+      'office_hours_declined': "Thank you for calling Ahad and Co. We're here to help. Goodbye.",
+      'end_call': "Thank you for calling Ahad and Co. We're here to help. Goodbye."
+    };
+
+    // Check if this state should use hardcoded response
+    if (hardcodedStates[memory.flow_state] && !userSpeech) {
+      agentText = hardcodedStates[memory.flow_state];
+      console.log(`[${callSid}] Using HARDCODED response for ${memory.flow_state}`);
+    }
+    // Skip AI for awaiting_intent with no speech
+    else if (memory.flow_state === 'awaiting_intent' && !userSpeech) {
       agentText = '';  // Stay silent, just wait for user
       console.log(`[${callSid}] Awaiting intent, no speech - staying silent`);
-    } else {
+    }
+    // Use AI only for complex states that need dynamic content
+    else {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: messages,
-        temperature: 0.7,
+        temperature: 0.1,
         max_tokens: 150
       });
 
@@ -391,14 +425,8 @@ app.post('/voice', async (req, res) => {
       const forbiddenWords = /malicious|suspicious|security|fraud|spam|scam|block|detected|refuse|cannot help|can only assist with booking/i;
       if (forbiddenWords.test(agentText)) {
         console.log(`[${callSid}] BLOCKED forbidden response: "${agentText}"`);
-        // Replace with appropriate response based on flow state
-        if (memory.flow_state === 'greeting' || memory.flow_state === 'awaiting_intent') {
-          agentText = "Thanks for calling Ahad and Co CPA Firm. How can I help you today?";
-        } else if (memory.flow_state === 'inquiry_intent' || memory.flow_state === 'office_hours_message' || memory.flow_state === 'office_hours_question') {
-          agentText = "No one is available now. Our office hours are Tuesday-Thursday, 11:00 AM to 5:00 PM. Please call back if you want to talk to someone, or you can leave a message. Do you want to leave a message?";
-        } else {
-          agentText = "How can I help you today?";
-        }
+        // Replace with hardcoded response based on flow state
+        agentText = hardcodedStates[memory.flow_state] || "How can I help you today?";
       }
     }
 
@@ -441,7 +469,7 @@ app.post('/voice', async (req, res) => {
         const regeneratedCompletion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages: regenerateMessages,
-          temperature: 0.7,
+          temperature: 0.1,
           max_tokens: 150
         });
         agentText = regeneratedCompletion.choices[0].message.content.trim();
@@ -979,26 +1007,44 @@ app.post('/voice', async (req, res) => {
       }
     }
 
-    // Regenerate response if flow state changed during state machine processing
+    // ===== HARDCODED RESPONSES AFTER STATE TRANSITIONS =====
+    // Instead of regenerating with AI, use hardcoded responses
     if (userSpeech && userSpeech.trim()) {
-      const regenerateStates = ['offer_slots', 'office_hours_message', 'inquiry_intent',
-                                'intent_clarification', 'message_fallback_intro', 'message_confirm',
-                                'office_hours_question', 'ask_preferred_time', 'appointment_email_confirm',
-                                'message_email_confirm', 'appointment_confirm', 'calendar_check'];
+      // Define hardcoded responses for each state after user input
+      const postTransitionResponses = {
+        'message_last_name': "And your last name?",
+        'message_phone': "What is the best phone number to reach you?",
+        'message_email': "And your email address?",
+        'message_email_confirm': `Let me read that back. ${memory.email_spelled ? memory.email_spelled.replace(/@/g, ' at ').replace(/\./g, ' dot ') : 'your email'}. Is that correct?`,
+        'message_content': "What is the reason for your call?",
+        'message_confirm': `Let me confirm: Your name is ${memory.first_name || ''} ${memory.last_name || ''}, phone ${memory.phone || ''}, email ${memory.email ? memory.email.replace(/@/g, ' at ').replace(/\./g, ' dot ') : ''}. Is that correct?`,
+        'message_complete': "Thank you. Your message has been received. Someone will call you back during business hours. Thank you for calling Ahad and Co. We're here to help. Goodbye.",
+        'appointment_last_name': "And your last name?",
+        'appointment_phone': "And your phone number?",
+        'appointment_email': "And your email address?",
+        'appointment_email_confirm': `Let me read that back. ${memory.email_spelled ? memory.email_spelled.replace(/@/g, ' at ').replace(/\./g, ' dot ') : 'your email'}. Is that correct?`,
+        'appointment_previous_client': "Are you a new client or a previous client with Ahad and Co?",
+        'appointment_referral': "How did you hear about us?",
+        'appointment_call_reason': "What is the reason for your call?",
+        'appointment_welcome_back': "Welcome back! What is the reason for your call?",
+        'appointment_confirm': `Let me confirm: Your name is ${memory.first_name || ''} ${memory.last_name || ''}, phone ${memory.phone || ''}, email ${memory.email ? memory.email.replace(/@/g, ' at ').replace(/\./g, ' dot ') : ''}, appointment on ${memory.selected_slot || ''}. Is that correct?`,
+        'appointment_complete': `Your appointment is confirmed for ${memory.selected_slot || ''}. You will receive a confirmation email and text. Thank you for calling Ahad and Co. We're here to help. Goodbye.`,
+        'offer_slots': memory.offered_slots && memory.offered_slots.length > 0
+          ? `I found the earliest available slot on ${memory.offered_slots[0].displayText}. Is that suitable for you?`
+          : "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?",
+        'message_fallback_intro': "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?",
+        'inquiry_intent': "No one is available right now. Our office hours are Tuesday to Thursday from 11:00 AM to 5:00 PM. Would you like to leave a message now or call back during business hours?",
+        'office_hours_message': "No one is available right now. Our office hours are Tuesday to Thursday from 11:00 AM to 5:00 PM. Would you like to leave a message now or call back during business hours?",
+        'office_hours_question': "Our office hours are Tuesday to Thursday from 11:00 AM to 5:00 PM. Would you like to leave a message or call back during business hours?",
+        'calendar_check': "Let me look at our calendar.",
+        'ask_preferred_time': "What time would you prefer?",
+        'intent_clarification': "I'd be happy to help. Are you looking to schedule an appointment or leave a message?"
+      };
 
-      if (regenerateStates.includes(memory.flow_state)) {
-        const regenerateMessages = [buildSystemPrompt(memory)];
-        regenerateMessages.push({ role: "user", content: "Continue the conversation based on the current state." });
-
-        const regeneratedCompletion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: regenerateMessages,
-          temperature: 0.7,
-          max_tokens: 150
-        });
-
-        agentText = regeneratedCompletion.choices[0].message.content.trim();
-        memory.history[memory.history.length - 1].content = agentText; // Update last assistant message
+      // Use hardcoded response if available
+      if (postTransitionResponses[memory.flow_state]) {
+        agentText = postTransitionResponses[memory.flow_state];
+        console.log(`[${callSid}] Using HARDCODED post-transition response for ${memory.flow_state}`);
       }
     }
 
