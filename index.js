@@ -194,15 +194,16 @@ function detectIntentByKeywords(speech) {
   return 'unclear';
 }
 
-// Extract name from speech (improved - more lenient)
+// Extract name from speech (improved - very lenient for voice input)
 function extractName(speech) {
   let name = speech.trim();
+  console.log(`Extracting name from: "${name}"`);
 
   // Remove common conversation prefixes (including comma-separated ones)
-  name = name.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?)\s*/i, '');
+  name = name.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?|well,?)\s*/i, '');
 
   // Remove "my name is" patterns
-  name = name.replace(/^(my (first|last) name is|my name is|it's|i'm|this is|the name is)\s*/i, '');
+  name = name.replace(/^(my (first|last) name is|my name is|it's|i'm|this is|the name is|i am|call me)\s*/i, '');
 
   // Remove trailing punctuation
   name = name.replace(/[.,!?]$/g, '');
@@ -210,47 +211,69 @@ function extractName(speech) {
   // Clean up extra spaces
   name = name.replace(/\s+/g, ' ').trim();
 
-  // Only reject if it's clearly invalid (very long or has question mark)
-  if (name.split(' ').length > 5 || /\?/.test(name)) {
-    console.log(`Invalid name detected: "${name}" - too long or contains question mark`);
+  // If name contains a question, reject it
+  if (/\?/.test(name)) {
+    console.log(`Invalid name detected: "${name}" - contains question mark`);
     return '';
   }
 
-  // If name is too short (less than 2 characters), reject
-  if (name.length < 2) {
+  // Take only the first 3 words max (to handle "John Michael Smith" but not long sentences)
+  const words = name.split(' ');
+  if (words.length > 3) {
+    name = words.slice(0, 3).join(' ');
+    console.log(`Name truncated to first 3 words: "${name}"`);
+  }
+
+  // If name is too short (less than 1 character), reject
+  if (name.length < 1) {
     console.log(`Invalid name detected: "${name}" - too short`);
     return '';
   }
 
+  console.log(`Extracted name: "${name}"`);
   return name;
 }
 
-// Extract email from speech (improved)
+// Extract email from speech (improved - more lenient for voice input)
 function extractEmail(speech) {
   let email = speech.toLowerCase().trim();
+  console.log(`Extracting email from: "${email}"`);
 
   // Remove conversation prefixes
-  email = email.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?)\s*/i, '');
+  email = email.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?|it's|my email( address)? is|the email is)\s*/gi, '');
 
-  // Remove common email prefixes
-  email = email.replace(/^(my email( address)? is|it's|the email is)\s*/i, '');
+  // FIRST: Convert speech to email format BEFORE removing spaces (word boundaries need spaces)
+  email = email.replace(/\s+at\s+/gi, '@');
+  email = email.replace(/\bat\b/gi, '@');
+  email = email.replace(/\s+dot\s+/gi, '.');
+  email = email.replace(/\bdot\b/gi, '.');
 
-  // Remove all spaces
+  // Handle spelled out letters with spaces (e.g., "s a e e d")
+  // If mostly single letters with spaces, join them
+  const words = email.split(/\s+/);
+  if (words.length > 3 && words.filter(w => w.length === 1).length > words.length / 2) {
+    email = words.join('');
+  }
+
+  // NOW remove remaining spaces
   email = email.replace(/\s+/g, '');
 
-  // Convert speech to email format
-  email = email.replace(/\bat\b/g, '@');
-  email = email.replace(/\bdot\b/g, '.');
+  // Clean up common speech-to-text issues
+  email = email.replace(/\.+$/g, '');  // Remove trailing dots
+  email = email.replace(/@@+/g, '@');  // Fix double @
+  email = email.replace(/\.\.+/g, '.'); // Fix double dots
 
-  // Remove any remaining periods from sentences
-  email = email.replace(/\.+$/g, '');
+  console.log(`Processed email: "${email}"`);
 
-  // Validate: must contain @ and at least one dot after @
-  if (!/@/.test(email) || !email.match(/@.+\./)) {
-    console.log(`Invalid email detected: "${email}" - missing @ or domain`);
+  // More lenient validation - just needs @ and something after it
+  // Accept if it has @ and at least looks like an email
+  if (!/@/.test(email)) {
+    console.log(`Invalid email detected: "${email}" - missing @`);
     return '';
   }
 
+  // If it has @ but no dot, still accept it (user might have said domain wrong)
+  // We'll confirm with them anyway
   return email;
 }
 
@@ -683,43 +706,20 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_last_name') {
+        // Be very lenient - accept whatever they say as the last name
         const extracted = extractName(userSpeech);
-        if (extracted && extracted.length > 0) {
-          memory.last_name = extracted;
-          memory.flow_state = 'appointment_phone';  // FIXED: phone before email
-          memory.last_name_retry = 0;
-          console.log(`[${callSid}] Appointment last_name: ${memory.last_name}`);
-        } else {
-          memory.last_name_retry++;
-          console.log(`[${callSid}] Invalid last name, retry ${memory.last_name_retry}/2`);
-
-          if (memory.last_name_retry >= 2) {
-            memory.last_name = userSpeech.trim();
-            memory.flow_state = 'appointment_phone';  // FIXED: phone before email
-            console.log(`[${callSid}] Accepting last name after retries: ${memory.last_name}`);
-          }
-        }
+        memory.last_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
+        memory.flow_state = 'appointment_phone';
+        console.log(`[${callSid}] Appointment last_name: ${memory.last_name}`);
       }
 
       else if (memory.flow_state === 'appointment_email') {
-        // Capture email from user
+        // Capture email from user - be very lenient, confirmation will verify
         const extracted = extractEmail(userSpeech);
-        if (extracted && extracted.length > 0) {
-          memory.email_spelled = extracted;
-          memory.flow_state = 'appointment_email_confirm';  // Go to confirmation
-          memory.email_retry = 0;
-          console.log(`[${callSid}] Appointment email captured: ${memory.email_spelled}`);
-        } else {
-          memory.email_retry++;
-          console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
-
-          if (memory.email_retry >= 2) {
-            // Accept whatever was said after 2 retries
-            memory.email_spelled = userSpeech.trim();
-            memory.flow_state = 'appointment_email_confirm';
-            console.log(`[${callSid}] Accepting email after retries: ${memory.email_spelled}`);
-          }
-        }
+        // Accept whatever we got, even if extraction failed - confirmation will handle it
+        memory.email_spelled = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
+        memory.flow_state = 'appointment_email_confirm';
+        console.log(`[${callSid}] Appointment email captured: ${memory.email_spelled}`);
       }
 
       // SIMPLIFIED: Email confirmation - agent reads back email, waits for yes/no
@@ -752,21 +752,17 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_phone') {
+        // Extract digits, be lenient - accept anything with at least 7 digits
         const extracted = userSpeech.replace(/\D/g, '');
-        if (extracted && extracted.length >= 10) {
+        if (extracted && extracted.length >= 7) {
           memory.phone = extracted;
-          memory.flow_state = 'appointment_email';  // FIXED: now goes to email (question 4)
-          memory.phone_retry = 0;
+          memory.flow_state = 'appointment_email';
           console.log(`[${callSid}] Appointment phone: ${memory.phone}`);
         } else {
-          memory.phone_retry++;
-          console.log(`[${callSid}] Invalid phone, retry ${memory.phone_retry}/2`);
-
-          if (memory.phone_retry >= 2) {
-            memory.phone = extracted || userSpeech.replace(/\D/g, '');
-            memory.flow_state = 'appointment_email';  // FIXED: now goes to email
-            console.log(`[${callSid}] Accepting phone after retries: ${memory.phone}`);
-          }
+          // Accept whatever digits we got and move on
+          memory.phone = extracted || userSpeech.replace(/\D/g, '') || 'not provided';
+          memory.flow_state = 'appointment_email';
+          console.log(`[${callSid}] Appointment phone (lenient): ${memory.phone}`);
         }
       }
 
@@ -861,22 +857,11 @@ app.post('/voice', async (req, res) => {
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
         } else {
+          // Be very lenient - accept whatever they say as the last name
           const extracted = extractName(userSpeech);
-          if (extracted && extracted.length > 0) {
-            memory.last_name = extracted;
-            memory.flow_state = 'message_phone';
-            memory.last_name_retry = 0;
-            console.log(`[${callSid}] Message last_name: ${memory.last_name}`);
-          } else {
-            memory.last_name_retry++;
-            console.log(`[${callSid}] Invalid last name, retry ${memory.last_name_retry}/2`);
-
-            if (memory.last_name_retry >= 2) {
-              memory.last_name = userSpeech.trim();
-              memory.flow_state = 'message_phone';
-              console.log(`[${callSid}] Accepting last name after retries: ${memory.last_name}`);
-            }
-          }
+          memory.last_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
+          memory.flow_state = 'message_phone';
+          console.log(`[${callSid}] Message last_name: ${memory.last_name}`);
         }
       }
 
@@ -887,21 +872,17 @@ app.post('/voice', async (req, res) => {
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
         } else {
+          // Extract digits, be lenient - accept anything with at least 7 digits
           const extracted = userSpeech.replace(/\D/g, '');
-          if (extracted && extracted.length >= 10) {
+          if (extracted && extracted.length >= 7) {
             memory.phone = extracted;
             memory.flow_state = 'message_email';
-            memory.phone_retry = 0;
             console.log(`[${callSid}] Message phone: ${memory.phone}`);
           } else {
-            memory.phone_retry++;
-            console.log(`[${callSid}] Invalid phone, retry ${memory.phone_retry}/2`);
-
-            if (memory.phone_retry >= 2) {
-              memory.phone = extracted || userSpeech.replace(/\D/g, '');
-              memory.flow_state = 'message_email';
-              console.log(`[${callSid}] Accepting phone after retries: ${memory.phone}`);
-            }
+            // Accept whatever digits we got and move on
+            memory.phone = extracted || userSpeech.replace(/\D/g, '') || 'not provided';
+            memory.flow_state = 'message_email';
+            console.log(`[${callSid}] Message phone (lenient): ${memory.phone}`);
           }
         }
       }
@@ -913,24 +894,12 @@ app.post('/voice', async (req, res) => {
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
         } else {
-          // Capture email from user
+          // Capture email from user - be very lenient, confirmation will verify
           const extracted = extractEmail(userSpeech);
-          if (extracted && extracted.length > 0) {
-            memory.email_spelled = extracted;
-            memory.flow_state = 'message_email_confirm';  // Go to confirmation
-            memory.email_retry = 0;
-            console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
-          } else {
-            memory.email_retry++;
-            console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
-
-            if (memory.email_retry >= 2) {
-              // Accept whatever was said after 2 retries
-              memory.email_spelled = userSpeech.trim();
-              memory.flow_state = 'message_email_confirm';
-              console.log(`[${callSid}] Accepting email after retries: ${memory.email_spelled}`);
-            }
-          }
+          // Accept whatever we got, even if extraction failed - confirmation will handle it
+          memory.email_spelled = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
+          memory.flow_state = 'message_email_confirm';
+          console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
         }
       }
 
