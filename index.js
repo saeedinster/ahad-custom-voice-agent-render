@@ -49,8 +49,9 @@ async function getCalendarAvailability(startDate, endDate, preferredTime = null)
       timeZone: calComTimezone
     });
 
+    // Cal.com API - use /slots endpoint for getting available booking slots
     const response = await axios.get(
-      `https://api.cal.com/v1/availability?${params.toString()}`,
+      `https://api.cal.com/v1/slots?${params.toString()}`,
       { timeout: 10000 }
     );
 
@@ -521,18 +522,14 @@ app.post('/voice', async (req, res) => {
         }
         memory.calendar_check_announced = false; // Reset flag
 
-        // Regenerate response for the new state (offer_slots or message_fallback_intro)
-        const regenerateMessages = [buildSystemPrompt(memory)];
-        regenerateMessages.push({ role: "user", content: "Continue." });
-        const regeneratedCompletion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: regenerateMessages,
-          temperature: 0.1,
-          max_tokens: 150
-        });
-        agentText = regeneratedCompletion.choices[0].message.content.trim();
+        // Use HARDCODED response for offer_slots or message_fallback (no AI)
+        if (memory.flow_state === 'offer_slots' && memory.offered_slots && memory.offered_slots.length > 0) {
+          agentText = `I found the earliest available slot on ${memory.offered_slots[0].displayText}. Is that suitable for you?`;
+        } else {
+          agentText = "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?";
+        }
         memory.history.push({ role: "assistant", content: agentText });
-        console.log(`[${callSid}] Regenerated response for ${memory.flow_state}: ${agentText}`);
+        console.log(`[${callSid}] Using HARDCODED response for ${memory.flow_state}: ${agentText}`);
       } else {
         // First request - set flag, agent will say "Let me look at our calendar"
         memory.calendar_check_announced = true;
