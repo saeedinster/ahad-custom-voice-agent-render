@@ -211,9 +211,22 @@ function extractName(speech) {
   // Clean up extra spaces
   name = name.replace(/\s+/g, ' ').trim();
 
-  // If name contains a question, reject it
+  // Reject if contains question mark
   if (/\?/.test(name)) {
     console.log(`Invalid name detected: "${name}" - contains question mark`);
+    return '';
+  }
+
+  // Reject if it looks like a sentence (contains common verbs/pronouns that aren't names)
+  // These patterns indicate user is trying to say something other than their name
+  if (/\b(would like|want to|need to|have to|going to|trying to|call me back|call back|about the|about my|someone|please)\b/i.test(name)) {
+    console.log(`Invalid name detected: "${name}" - looks like a sentence, not a name`);
+    return '';
+  }
+
+  // Reject if starts with "I " (pronoun) - common in sentences
+  if (/^I\s/i.test(name)) {
+    console.log(`Invalid name detected: "${name}" - starts with 'I'`);
     return '';
   }
 
@@ -275,6 +288,51 @@ function extractEmail(speech) {
   // If it has @ but no dot, still accept it (user might have said domain wrong)
   // We'll confirm with them anyway
   return email;
+}
+
+// Spell out email letter by letter for TTS (CRITICAL for confirmation)
+// Example: "saeed@gmail.com" -> "S. A. E. E. D. at. G. M. A. I. L. dot. C. O. M."
+function spellEmailForSpeech(email) {
+  if (!email) return 'your email';
+
+  let spelled = '';
+  for (let i = 0; i < email.length; i++) {
+    const char = email[i].toUpperCase();
+    if (char === '@') {
+      spelled += ' ... at ... ';
+    } else if (char === '.') {
+      spelled += ' ... dot ... ';
+    } else if (char === '-') {
+      spelled += ' ... dash ... ';
+    } else if (char === '_') {
+      spelled += ' ... underscore ... ';
+    } else if (/[0-9]/.test(char)) {
+      spelled += char + '. ';
+    } else if (/[A-Z]/.test(char)) {
+      spelled += char + '. ';
+    }
+  }
+  return spelled.trim();
+}
+
+// Format phone number for natural speech with pauses
+// Example: "9175458915" -> "917. 545. 8915"
+function formatPhoneForSpeech(phone) {
+  if (!phone) return 'your phone number';
+
+  // Remove non-digits
+  const digits = phone.replace(/\D/g, '');
+
+  if (digits.length === 10) {
+    // Format as XXX. XXX. XXXX with pauses
+    return `${digits.slice(0, 3)}. ${digits.slice(3, 6)}. ${digits.slice(6)}`;
+  } else if (digits.length === 11 && digits[0] === '1') {
+    // Format as 1. XXX. XXX. XXXX
+    return `1. ${digits.slice(1, 4)}. ${digits.slice(4, 7)}. ${digits.slice(7)}`;
+  }
+
+  // For other lengths, just add spaces between groups of 3-4
+  return digits.replace(/(\d{3,4})/g, '$1. ').trim();
 }
 
 // Build context-aware system prompt (now uses external prompts file)
@@ -380,12 +438,12 @@ app.post('/voice', async (req, res) => {
       'message_first_name': "May I have your first name, please?",
       'message_last_name': "And your last name?",
       'message_phone': "What is the best phone number to reach you?",
-      'message_email': "And your email address?",
+      'message_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
       'message_content': "What is the reason for your call?",
       'appointment_first_name': "May I have your first name, please?",
       'appointment_last_name': "And your last name?",
       'appointment_phone': "And your phone number?",
-      'appointment_email': "And your email address?",
+      'appointment_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
       'appointment_previous_client': "Are you a new client or a previous client with Ahad and Co?",
       'appointment_referral': "How did you hear about us?",
       'appointment_call_reason': "What is the reason for your call?",
@@ -725,12 +783,18 @@ app.post('/voice', async (req, res) => {
 
       // ===== APPOINTMENT DATA COLLECTION =====
       else if (memory.flow_state === 'appointment_first_name') {
-        // Accept first name on first attempt (do not repeat question multiple times)
         const extracted = extractName(userSpeech);
-        memory.first_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
-        memory.flow_state = 'appointment_last_name';
-        memory.first_name_retry = 0; // Reset counter
-        console.log(`[${callSid}] Appointment first_name recorded: ${memory.first_name}`);
+        if (extracted && extracted.length > 0) {
+          memory.first_name = extracted;
+          memory.flow_state = 'appointment_last_name';
+          memory.first_name_retry = 0; // Reset counter
+          console.log(`[${callSid}] Appointment first_name recorded: ${memory.first_name}`);
+        } else {
+          // Invalid input - stay in same state and ask again
+          memory.first_name_retry++;
+          console.log(`[${callSid}] Invalid first name input, asking again (retry ${memory.first_name_retry})`);
+          // Stay in appointment_first_name state
+        }
       }
 
       else if (memory.flow_state === 'appointment_last_name') {
@@ -751,18 +815,20 @@ app.post('/voice', async (req, res) => {
       }
 
       // SIMPLIFIED: Email confirmation - agent reads back email, waits for yes/no
+      // CRITICAL: Check NO patterns FIRST before YES (to catch "no, it's not correct")
       else if (memory.flow_state === 'appointment_email_confirm') {
-        if (/yes|yeah|correct|right|yep|that's right|that is correct/i.test(lowerSpeech)) {
-          // Email confirmed - proceed to next question
-          memory.email = memory.email_spelled;
-          memory.flow_state = 'appointment_previous_client';  // Question 5
-          console.log(`[${callSid}] Email confirmed: ${memory.email}`);
-        } else if (/no|wrong|incorrect|not right/i.test(lowerSpeech)) {
+        // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
+        if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
           // Re-collect email
           memory.email_spelled = null;
           memory.email_retry = 0;
           memory.flow_state = 'appointment_email';
           console.log(`[${callSid}] Email incorrect, restarting collection`);
+        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct/i.test(lowerSpeech)) {
+          // Email confirmed - proceed to next question (only if starts with yes/correct)
+          memory.email = memory.email_spelled;
+          memory.flow_state = 'appointment_previous_client';  // Question 5
+          console.log(`[${callSid}] Email confirmed: ${memory.email}`);
         } else {
           // Check if user provided a correction directly
           const corrected = extractEmail(userSpeech);
@@ -825,22 +891,23 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_confirm') {
-        // Check if user confirms
-        if (/yes|yeah|correct|right|yep/i.test(lowerSpeech)) {
-          memory.flow_state = 'appointment_complete';
-          console.log(`[${callSid}] Appointment confirmed, completing`);
-        } else if (/no|nope|wrong|incorrect/i.test(lowerSpeech)) {
+        // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
+        if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
           // Re-collect information
           memory.flow_state = 'appointment_first_name';
           memory.first_name = null;
           memory.last_name = null;
           memory.phone = null;
           memory.email = null;
+          memory.email_spelled = null;
           console.log(`[${callSid}] Appointment details incorrect, restarting collection`);
-        } else {
-          // Assume yes if unclear
+        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct/i.test(lowerSpeech)) {
           memory.flow_state = 'appointment_complete';
-          console.log(`[${callSid}] Unclear response, assuming appointment confirmed`);
+          console.log(`[${callSid}] Appointment confirmed, completing`);
+        } else {
+          // Unclear - ask again instead of assuming
+          console.log(`[${callSid}] Unclear response, asking for confirmation again`);
+          // Stay in appointment_confirm state
         }
       }
 
@@ -871,10 +938,17 @@ app.post('/voice', async (req, res) => {
         } else {
           // For message flow: collect first name, then ask for last name (per spec)
           const extracted = extractName(userSpeech);
-          memory.first_name = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
-          memory.first_name_retry = 0;
-          memory.flow_state = 'message_last_name';
-          console.log(`[${callSid}] Message first_name recorded: ${memory.first_name}`);
+          if (extracted && extracted.length > 0) {
+            memory.first_name = extracted;
+            memory.first_name_retry = 0;
+            memory.flow_state = 'message_last_name';
+            console.log(`[${callSid}] Message first_name recorded: ${memory.first_name}`);
+          } else {
+            // Invalid input - stay in same state and ask again
+            memory.first_name_retry++;
+            console.log(`[${callSid}] Invalid first name input, asking again (retry ${memory.first_name_retry})`);
+            // Stay in message_first_name state
+          }
         }
       }
 
@@ -932,23 +1006,26 @@ app.post('/voice', async (req, res) => {
       }
 
       // SIMPLIFIED: Message email confirmation - agent reads back, waits for yes/no
+      // CRITICAL: Check NO patterns FIRST before YES (to catch "no, it's not correct")
       else if (memory.flow_state === 'message_email_confirm') {
         // Check if user wants to switch to appointment
         if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
-        } else if (/yes|yeah|correct|right|yep|that's right|that is correct/i.test(lowerSpeech)) {
-          // Email confirmed - proceed to reason for call
-          memory.email = memory.email_spelled;
-          memory.flow_state = 'message_content';
-          console.log(`[${callSid}] Message email confirmed: ${memory.email}`);
-        } else if (/no|wrong|incorrect|not right/i.test(lowerSpeech)) {
+        }
+        // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
+        else if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
           // Re-collect email
           memory.email_spelled = null;
           memory.email_retry = 0;
           memory.flow_state = 'message_email';
           console.log(`[${callSid}] Message email incorrect, restarting collection`);
+        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct/i.test(lowerSpeech)) {
+          // Email confirmed - proceed to reason for call (only if starts with yes/correct)
+          memory.email = memory.email_spelled;
+          memory.flow_state = 'message_content';
+          console.log(`[${callSid}] Message email confirmed: ${memory.email}`);
         } else {
           // Check if user provided a correction directly
           const corrected = extractEmail(userSpeech);
@@ -989,20 +1066,24 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
-        } else if (/yes|yeah|correct|right|yep/i.test(lowerSpeech)) {
-          memory.flow_state = 'message_complete';
-          console.log(`[${callSid}] Message confirmed, completing`);
-        } else if (/no|nope|wrong|incorrect/i.test(lowerSpeech)) {
+        }
+        // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
+        else if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
           // Re-collect information
           memory.flow_state = 'message_first_name';
           memory.first_name = null;
+          memory.last_name = null;
           memory.phone = null;
           memory.email = null;
+          memory.email_spelled = null;
           console.log(`[${callSid}] Message details incorrect, restarting collection`);
-        } else {
-          // Assume yes if unclear
+        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct/i.test(lowerSpeech)) {
           memory.flow_state = 'message_complete';
-          console.log(`[${callSid}] Unclear response, assuming confirmed`);
+          console.log(`[${callSid}] Message confirmed, completing`);
+        } else {
+          // Unclear - ask again instead of assuming
+          console.log(`[${callSid}] Unclear response, asking for confirmation again`);
+          // Stay in message_confirm state
         }
       }
     }
@@ -1011,24 +1092,32 @@ app.post('/voice', async (req, res) => {
     // Instead of regenerating with AI, use hardcoded responses
     if (userSpeech && userSpeech.trim()) {
       // Define hardcoded responses for each state after user input
+      // Use spellEmailForSpeech() for letter-by-letter confirmation (CRITICAL)
+      // Use formatPhoneForSpeech() for readable phone numbers
       const postTransitionResponses = {
+        'message_first_name': memory.first_name_retry > 0
+          ? "I just need your first name. What is your first name?"
+          : "May I have your first name, please?",
         'message_last_name': "And your last name?",
         'message_phone': "What is the best phone number to reach you?",
-        'message_email': "And your email address?",
-        'message_email_confirm': `Let me read that back. ${memory.email_spelled ? memory.email_spelled.replace(/@/g, ' at ').replace(/\./g, ' dot ') : 'your email'}. Is that correct?`,
+        'message_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
+        'message_email_confirm': `Let me read that back to make sure I have it right. ... ${spellEmailForSpeech(memory.email_spelled)} ... Is that correct?`,
         'message_content': "What is the reason for your call?",
-        'message_confirm': `Let me confirm: Your name is ${memory.first_name || ''} ${memory.last_name || ''}, phone ${memory.phone || ''}, email ${memory.email ? memory.email.replace(/@/g, ' at ').replace(/\./g, ' dot ') : ''}. Is that correct?`,
+        'message_confirm': `Let me confirm your information. ... Your name is ${memory.first_name || ''} ${memory.last_name || ''}. ... Phone number: ${formatPhoneForSpeech(memory.phone)}. ... Email: ${spellEmailForSpeech(memory.email)}. ... Is all of that correct?`,
         'message_complete': "Thank you. Your message has been received. Someone will call you back during business hours. Thank you for calling Ahad and Co. We're here to help. Goodbye.",
+        'appointment_first_name': memory.first_name_retry > 0
+          ? "I just need your first name. What is your first name?"
+          : "Great! Let me collect your information. May I have your first name, please?",
         'appointment_last_name': "And your last name?",
-        'appointment_phone': "And your phone number?",
-        'appointment_email': "And your email address?",
-        'appointment_email_confirm': `Let me read that back. ${memory.email_spelled ? memory.email_spelled.replace(/@/g, ' at ').replace(/\./g, ' dot ') : 'your email'}. Is that correct?`,
+        'appointment_phone': "And your phone number? Please speak slowly.",
+        'appointment_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
+        'appointment_email_confirm': `Let me read that back to make sure I have it right. ... ${spellEmailForSpeech(memory.email_spelled)} ... Is that correct?`,
         'appointment_previous_client': "Are you a new client or a previous client with Ahad and Co?",
         'appointment_referral': "How did you hear about us?",
         'appointment_call_reason': "What is the reason for your call?",
         'appointment_welcome_back': "Welcome back! What is the reason for your call?",
-        'appointment_confirm': `Let me confirm: Your name is ${memory.first_name || ''} ${memory.last_name || ''}, phone ${memory.phone || ''}, email ${memory.email ? memory.email.replace(/@/g, ' at ').replace(/\./g, ' dot ') : ''}, appointment on ${memory.selected_slot || ''}. Is that correct?`,
-        'appointment_complete': `Your appointment is confirmed for ${memory.selected_slot || ''}. You will receive a confirmation email and text. Thank you for calling Ahad and Co. We're here to help. Goodbye.`,
+        'appointment_confirm': `Let me confirm your information. ... Your name is ${memory.first_name || ''} ${memory.last_name || ''}. ... Phone number: ${formatPhoneForSpeech(memory.phone)}. ... Email: ${spellEmailForSpeech(memory.email)}. ... Your appointment is scheduled for ${memory.selected_slot || ''}. ... Is all of that correct?`,
+        'appointment_complete': `Your appointment is confirmed for ${memory.selected_slot || ''}. A confirmation will be sent to your email and a text to your phone. Thank you for calling Ahad and Co. We're here to help. Goodbye.`,
         'offer_slots': memory.offered_slots && memory.offered_slots.length > 0
           ? `I found the earliest available slot on ${memory.offered_slots[0].displayText}. Is that suitable for you?`
           : "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?",
