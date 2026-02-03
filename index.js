@@ -291,17 +291,64 @@ function extractEmail(speech) {
   return email;
 }
 
-// Spell out email letter by letter for TTS (CRITICAL for confirmation)
-// Example: "saeed@gmail.com" -> "S. A. E. E. D. at. G. M. A. I. L. dot. C. O. M."
+// Spell out email for TTS - spell username letter by letter, but say common domains naturally
+// Example: "saeed@gmail.com" -> "S. A. E. E. D. ... at gmail dot com"
+// Example: "john.doe@yahoo.com" -> "J. O. H. N. ... dot ... D. O. E. ... at yahoo dot com"
+// This prevents spelling out "G. M. A. I. L." which sounds unnatural
 function spellEmailForSpeech(email) {
   if (!email) return 'your email';
 
+  // Common domains that should be spoken naturally (not spelled)
+  const commonDomains = {
+    'gmail.com': 'gmail dot com',
+    'yahoo.com': 'yahoo dot com',
+    'hotmail.com': 'hotmail dot com',
+    'outlook.com': 'outlook dot com',
+    'aol.com': 'A O L dot com',
+    'icloud.com': 'i cloud dot com',
+    'msn.com': 'M S N dot com',
+    'live.com': 'live dot com',
+    'comcast.net': 'comcast dot net',
+    'verizon.net': 'verizon dot net',
+    'att.net': 'A T T dot net',
+    'sbcglobal.net': 'S B C global dot net',
+    'me.com': 'me dot com',
+    'mac.com': 'mac dot com',
+    'protonmail.com': 'proton mail dot com',
+    'mail.com': 'mail dot com'
+  };
+
+  // Split email into username and domain
+  const atIndex = email.indexOf('@');
+  if (atIndex === -1) {
+    // No @ sign - spell entire thing
+    return spellPartForSpeech(email);
+  }
+
+  const username = email.substring(0, atIndex);
+  const domain = email.substring(atIndex + 1).toLowerCase();
+
+  // Spell the username letter by letter
+  const spelledUsername = spellPartForSpeech(username);
+
+  // Check if domain is common - if so, say it naturally
+  if (commonDomains[domain]) {
+    return `${spelledUsername} ... at ${commonDomains[domain]}`;
+  }
+
+  // For unknown domains, spell the whole domain
+  const spelledDomain = spellPartForSpeech(domain);
+  return `${spelledUsername} ... at ... ${spelledDomain}`;
+}
+
+// Helper function to spell a string letter by letter for TTS
+function spellPartForSpeech(text) {
+  if (!text) return '';
+
   let spelled = '';
-  for (let i = 0; i < email.length; i++) {
-    const char = email[i].toUpperCase();
-    if (char === '@') {
-      spelled += ' ... at ... ';
-    } else if (char === '.') {
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i].toUpperCase();
+    if (char === '.') {
       spelled += ' ... dot ... ';
     } else if (char === '-') {
       spelled += ' ... dash ... ';
@@ -316,24 +363,32 @@ function spellEmailForSpeech(email) {
   return spelled.trim();
 }
 
-// Format phone number for natural speech with pauses
-// Example: "9175458915" -> "917. 545. 8915"
+// Format phone number for TTS - spell out EACH digit individually
+// Example: "9175458915" -> "9. 1. 7. ... 5. 4. 5. ... 8. 9. 1. 5."
+// This prevents TTS from saying "five hundred forty five" instead of individual digits
 function formatPhoneForSpeech(phone) {
   if (!phone) return 'your phone number';
 
   // Remove non-digits
   const digits = phone.replace(/\D/g, '');
 
+  if (digits.length === 0) return 'your phone number';
+
+  // Spell out each digit with pauses, group by 3-3-4 for 10 digits
   if (digits.length === 10) {
-    // Format as XXX. XXX. XXXX with pauses
-    return `${digits.slice(0, 3)}. ${digits.slice(3, 6)}. ${digits.slice(6)}`;
+    const part1 = digits.slice(0, 3).split('').join('. ');
+    const part2 = digits.slice(3, 6).split('').join('. ');
+    const part3 = digits.slice(6).split('').join('. ');
+    return `${part1}. ... ${part2}. ... ${part3}.`;
   } else if (digits.length === 11 && digits[0] === '1') {
-    // Format as 1. XXX. XXX. XXXX
-    return `1. ${digits.slice(1, 4)}. ${digits.slice(4, 7)}. ${digits.slice(7)}`;
+    const part1 = digits.slice(1, 4).split('').join('. ');
+    const part2 = digits.slice(4, 7).split('').join('. ');
+    const part3 = digits.slice(7).split('').join('. ');
+    return `1. ... ${part1}. ... ${part2}. ... ${part3}.`;
   }
 
-  // For other lengths, just add spaces between groups of 3-4
-  return digits.replace(/(\d{3,4})/g, '$1. ').trim();
+  // For other lengths, spell each digit with periods
+  return digits.split('').join('. ') + '.';
 }
 
 // Build context-aware system prompt (now uses external prompts file)
@@ -489,11 +544,11 @@ app.post('/voice', async (req, res) => {
       }
     }
 
-    // Save to history
+    // Save user speech to history (assistant response saved later after postTransitionResponses)
     if (userSpeech) {
       memory.history.push({ role: "user", content: userSpeech });
     }
-    memory.history.push({ role: "assistant", content: agentText });
+    // NOTE: Don't save agentText to history here - wait until after postTransitionResponses
 
     // Mark greeting as done after first response (prevents repetition)
     if (memory.flow_state === 'greeting' && !memory.greeting_done) {
@@ -528,7 +583,7 @@ app.post('/voice', async (req, res) => {
         } else {
           agentText = "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?";
         }
-        memory.history.push({ role: "assistant", content: agentText });
+        // NOTE: History is saved later in the main flow after postTransitionResponses
         console.log(`[${callSid}] Using HARDCODED response for ${memory.flow_state}: ${agentText}`);
       } else {
         // First request - set flag, agent will say "Let me look at our calendar"
@@ -1134,9 +1189,21 @@ app.post('/voice', async (req, res) => {
       }
     }
 
+    // NOW save agent response to history (after postTransitionResponses is applied)
+    if (agentText && agentText.trim().length > 0) {
+      memory.history.push({ role: "assistant", content: agentText });
+    }
+
+    // LIMIT HISTORY to prevent context overflow (keep last 16 messages = 8 exchanges)
+    const MAX_HISTORY = 16;
+    if (memory.history.length > MAX_HISTORY) {
+      memory.history = memory.history.slice(-MAX_HISTORY);
+      console.log(`[${callSid}] History trimmed to last ${MAX_HISTORY} messages`);
+    }
+
     console.log(`[${callSid}] Agent: "${agentText}"`);
     console.log(`[${callSid}] Flow State: ${memory.flow_state}`);
-    console.log(`[${callSid}] Memory:`, JSON.stringify(memory, null, 2));
+    console.log(`[${callSid}] History length: ${memory.history.length}`);
 
   } catch (error) {
     console.error(`[${callSid}] Error in AI processing:`, error);
