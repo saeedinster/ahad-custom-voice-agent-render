@@ -944,7 +944,7 @@ app.post('/voice', async (req, res) => {
           memory.email = null;
           memory.email_spelled = null;
           console.log(`[${callSid}] Appointment details incorrect, restarting collection`);
-        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct/i.test(lowerSpeech)) {
+        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct|all good|sounds good|perfect|great|awesome|good|ok|okay|sure|absolutely|definitely/i.test(lowerSpeech)) {
           memory.flow_state = 'appointment_complete';
           console.log(`[${callSid}] Appointment confirmed, completing`);
         } else {
@@ -1127,7 +1127,7 @@ app.post('/voice', async (req, res) => {
           memory.email = null;
           memory.email_spelled = null;
           console.log(`[${callSid}] Message details incorrect, restarting collection`);
-        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct/i.test(lowerSpeech)) {
+        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct|all good|sounds good|perfect|great|awesome|good|ok|okay|sure|absolutely|definitely/i.test(lowerSpeech)) {
           memory.flow_state = 'message_complete';
           console.log(`[${callSid}] Message confirmed, completing`);
         } else {
