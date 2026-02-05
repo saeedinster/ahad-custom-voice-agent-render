@@ -655,8 +655,9 @@ app.post('/voice', async (req, res) => {
         }
         else if (memory.intent === 'appointment') {
           // Set state to calendar_check - agent will say "Let me check our availability..."
-          // Actual calendar check happens on next turn in calendar_check handler
+          // Actual calendar check happens on next turn in calendar_check handler (lines 560-593)
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;  // Flag so next request checks calendar
           console.log(`[${callSid}] Appointment intent - will check calendar on next turn`);
         }
         else if (memory.intent === 'message') {
@@ -688,6 +689,7 @@ app.post('/voice', async (req, res) => {
         else if (memory.intent === 'appointment') {
           // Set state to calendar_check - agent will say "Let me check our availability..."
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;  // Flag so next request checks calendar
           console.log(`[${callSid}] Appointment intent from clarification - will check calendar on next turn`);
         } else if (memory.intent === 'message') {
           memory.flow_state = 'message_first_name';
@@ -700,6 +702,7 @@ app.post('/voice', async (req, res) => {
           // Still unclear, default to appointment
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;  // Flag so next request checks calendar
           console.log(`[${callSid}] Unclear intent, defaulting to appointment - will check calendar on next turn`);
         }
       }
@@ -766,22 +769,8 @@ app.post('/voice', async (req, res) => {
         }
       }
 
-      // ===== CALENDAR CHECK FLOW =====
-      else if (memory.flow_state === 'calendar_check') {
-        const startDate = new Date();
-        const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 2 weeks
-
-        const slots = await getCalendarAvailability(startDate, endDate, memory.user_preferred_time);
-
-        if (slots && slots.length > 0) {
-          memory.offered_slots = slots;
-          memory.flow_state = 'offer_slots';
-          console.log(`[${callSid}] Offering ${slots.length} calendar slots`);
-        } else {
-          console.log(`[${callSid}] No calendar availability, asking if user wants to leave message`);
-          memory.flow_state = 'message_fallback_intro';
-        }
-      }
+      // NOTE: Calendar check is handled in lines 560-593 (BEFORE this state machine block)
+      // This ensures "Let me look at our calendar" is said FIRST, then calendar is checked on NEXT request
 
       // ===== SLOT OFFER & NEGOTIATION =====
       else if (memory.flow_state === 'offer_slots') {
@@ -800,6 +789,7 @@ app.post('/voice', async (req, res) => {
           if (timePreferencePattern.test(userSpeech.toLowerCase())) {
             memory.user_preferred_time = userSpeech.trim();
             memory.flow_state = 'calendar_check';
+            memory.calendar_check_announced = true;  // Flag so next request checks calendar
             console.log(`[${callSid}] Caller provided preferred time: ${memory.user_preferred_time} - re-checking availability`);
           }
           // If explicit rejection, ask for preferred time immediately
@@ -830,6 +820,7 @@ app.post('/voice', async (req, res) => {
         // Capture caller's preferred time phrase and re-run availability search
         memory.user_preferred_time = userSpeech.trim();
         memory.flow_state = 'calendar_check';
+        memory.calendar_check_announced = true;  // Flag so next request checks calendar
         console.log(`[${callSid}] Caller preferred time received: ${memory.user_preferred_time}`);
       }
 
@@ -987,6 +978,7 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
         } else {
           // For message flow: collect first name, then ask for last name (per spec)
           const extracted = extractName(userSpeech);
@@ -1010,6 +1002,7 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
         } else {
           // Be very lenient - accept whatever they say as the last name
           const extracted = extractName(userSpeech);
@@ -1025,6 +1018,7 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
         } else {
           // Extract digits, be lenient - accept anything with at least 7 digits
           const extracted = userSpeech.replace(/\D/g, '');
@@ -1047,6 +1041,7 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
         } else {
           // Capture email from user - be very lenient, confirmation will verify
           const extracted = extractEmail(userSpeech);
@@ -1065,6 +1060,7 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
         }
         // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
         else if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
@@ -1100,6 +1096,7 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
         } else {
           const extracted = userSpeech.trim();
           if (extracted && extracted.length > 2) {
@@ -1118,6 +1115,7 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] User wants appointment during message flow - switching`);
           memory.intent = 'appointment';
           memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
         }
         // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
         else if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
