@@ -861,7 +861,7 @@ app.post('/voice', async (req, res) => {
       // CRITICAL: Check NO patterns FIRST before YES (to catch "no, it's not correct")
       else if (memory.flow_state === 'appointment_email_confirm') {
         // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
-        if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
+        if (/^no\b|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
           // Re-collect email
           memory.email_spelled = null;
           memory.email_retry = 0;
@@ -873,17 +873,38 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'appointment_previous_client';  // Question 5
           console.log(`[${callSid}] Email confirmed: ${memory.email}`);
         } else {
-          // Check if user provided a correction directly
-          const corrected = extractEmail(userSpeech);
-          if (corrected) {
-            memory.email_spelled = corrected;
-            // Stay in confirm state to read back the corrected email
-            console.log(`[${callSid}] Email corrected to: ${corrected}`);
+          // Check if user is providing ADDITIONAL email content (like "gmail.com" or "@gmail.com")
+          // This happens when user is adding domain to incomplete email
+          const domainPattern = /(@?)(gmail|yahoo|hotmail|outlook|aol|icloud|msn|live|comcast|verizon|att|mail|proton)\s*(\.|\s*dot\s*)\s*(com|net|org)/i;
+          const additionalLetters = /^[a-z\s@\.]+$/i.test(userSpeech.trim()) && userSpeech.trim().length > 1;
+
+          if (domainPattern.test(lowerSpeech)) {
+            // User is providing domain - append to existing email
+            let domain = lowerSpeech.replace(/\s+dot\s+/gi, '.').replace(/\s+at\s+/gi, '@').replace(/\s+/g, '');
+            if (!domain.startsWith('@')) domain = '@' + domain;
+            // Clean the existing email and append domain
+            let cleanedEmail = memory.email_spelled.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+            memory.email_spelled = cleanedEmail + domain;
+            console.log(`[${callSid}] Domain appended, email is now: ${memory.email_spelled}`);
+            // Stay in confirm to verify the complete email
           } else {
-            // Unclear response - assume confirmed to avoid loop
-            memory.email = memory.email_spelled;
-            memory.flow_state = 'appointment_previous_client';
-            console.log(`[${callSid}] Unclear response, assuming email confirmed: ${memory.email}`);
+            // Check if user provided a complete correction
+            const corrected = extractEmail(userSpeech);
+            if (corrected && corrected.includes('@')) {
+              memory.email_spelled = corrected;
+              console.log(`[${callSid}] Email corrected to: ${corrected}`);
+              // Stay in confirm state to read back the corrected email
+            } else if (additionalLetters && !corrected) {
+              // User is spelling more letters - append to existing
+              let additionalChars = userSpeech.replace(/\s+/g, '').toLowerCase();
+              memory.email_spelled = (memory.email_spelled || '') + additionalChars;
+              console.log(`[${callSid}] Additional characters appended: ${additionalChars}`);
+              // Stay in confirm state
+            } else {
+              // Truly unclear - ask again instead of assuming
+              console.log(`[${callSid}] Unclear email response, asking again`);
+              // Stay in appointment_email_confirm state, will re-read back
+            }
           }
         }
       }
@@ -904,12 +925,21 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_previous_client') {
-        if (/yes|yeah|returning|client|previous/i.test(lowerSpeech)) {
-          memory.previous_client = 'Yes';
-          memory.flow_state = 'appointment_welcome_back';
-        } else {
+        // CRITICAL: Check for NEW client patterns FIRST before returning client
+        // "No, I'm new client" should NOT match as returning client
+        if (/\b(new|first time|never been|not a client|no)\b/i.test(lowerSpeech)) {
           memory.previous_client = 'No';
           memory.flow_state = 'appointment_referral';
+          console.log(`[${callSid}] New client detected`);
+        } else if (/\b(yes|yeah|returning|previous|been here|came before|existing)\b/i.test(lowerSpeech)) {
+          memory.previous_client = 'Yes';
+          memory.flow_state = 'appointment_welcome_back';
+          console.log(`[${callSid}] Returning client detected`);
+        } else {
+          // Unclear - default to new client (safer)
+          memory.previous_client = 'No';
+          memory.flow_state = 'appointment_referral';
+          console.log(`[${callSid}] Unclear response, defaulting to new client`);
         }
         console.log(`[${callSid}] Previous client: ${memory.previous_client}`);
       }
@@ -1063,7 +1093,7 @@ app.post('/voice', async (req, res) => {
           memory.calendar_check_announced = true;
         }
         // CHECK NO FIRST - to catch "no", "not correct", "nothing is correct", etc.
-        else if (/^no|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
+        else if (/^no\b|not correct|nothing|wrong|incorrect|not right|that's wrong/i.test(lowerSpeech)) {
           // Re-collect email
           memory.email_spelled = null;
           memory.email_retry = 0;
@@ -1075,17 +1105,29 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'message_content';
           console.log(`[${callSid}] Message email confirmed: ${memory.email}`);
         } else {
-          // Check if user provided a correction directly
-          const corrected = extractEmail(userSpeech);
-          if (corrected) {
-            memory.email_spelled = corrected;
-            // Stay in confirm state to read back the corrected email
-            console.log(`[${callSid}] Message email corrected to: ${corrected}`);
+          // Check if user is providing ADDITIONAL email content (like "gmail.com" or "@gmail.com")
+          const domainPattern = /(@?)(gmail|yahoo|hotmail|outlook|aol|icloud|msn|live|comcast|verizon|att|mail|proton)\s*(\.|\s*dot\s*)\s*(com|net|org)/i;
+          const additionalLetters = /^[a-z\s@\.]+$/i.test(userSpeech.trim()) && userSpeech.trim().length > 1;
+
+          if (domainPattern.test(lowerSpeech)) {
+            // User is providing domain - append to existing email
+            let domain = lowerSpeech.replace(/\s+dot\s+/gi, '.').replace(/\s+at\s+/gi, '@').replace(/\s+/g, '');
+            if (!domain.startsWith('@')) domain = '@' + domain;
+            let cleanedEmail = memory.email_spelled.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+            memory.email_spelled = cleanedEmail + domain;
+            console.log(`[${callSid}] Message domain appended, email is now: ${memory.email_spelled}`);
           } else {
-            // Unclear response - assume confirmed to avoid loop
-            memory.email = memory.email_spelled;
-            memory.flow_state = 'message_content';
-            console.log(`[${callSid}] Unclear response, assuming message email confirmed: ${memory.email}`);
+            const corrected = extractEmail(userSpeech);
+            if (corrected && corrected.includes('@')) {
+              memory.email_spelled = corrected;
+              console.log(`[${callSid}] Message email corrected to: ${corrected}`);
+            } else if (additionalLetters && !corrected) {
+              let additionalChars = userSpeech.replace(/\s+/g, '').toLowerCase();
+              memory.email_spelled = (memory.email_spelled || '') + additionalChars;
+              console.log(`[${callSid}] Message additional characters appended: ${additionalChars}`);
+            } else {
+              console.log(`[${callSid}] Unclear message email response, asking again`);
+            }
           }
         }
       }
@@ -1362,11 +1404,13 @@ app.post('/voice', async (req, res) => {
     console.log(`[${callSid}] Using Twilio TTS for goodbye`);
   } else if (agentText && agentText.trim().length > 0) {
     // Only speak if there's something to say
+    // speechTimeout: 3 seconds to prevent interrupting user mid-speech
     const gather = twiml.gather({
       input: 'speech',
       action: '/voice',
       method: 'POST',
-      speechTimeout: 'auto',
+      speechTimeout: 3,
+      timeout: 5,
       language: 'en-US',
       speechModel: 'phone_call'
     });
@@ -1377,11 +1421,13 @@ app.post('/voice', async (req, res) => {
     console.log(`[${callSid}] Using Twilio TTS`);
   } else {
     // No text to say - just gather speech silently (awaiting_intent)
+    // speechTimeout: 3 seconds to prevent interrupting user mid-speech
     twiml.gather({
       input: 'speech',
       action: '/voice',
       method: 'POST',
-      speechTimeout: 'auto',
+      speechTimeout: 3,
+      timeout: 5,
       language: 'en-US',
       speechModel: 'phone_call'
     });
