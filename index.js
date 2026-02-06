@@ -463,6 +463,10 @@ app.post('/voice', async (req, res) => {
       message_sent: false,
       conversation_ended: false,
 
+      // Repetition prevention
+      last_spoken_state: null,        // Track last state we spoke for
+      empty_speech_count: 0,          // Count consecutive empty speeches
+
       // History
       history: []
     };
@@ -514,15 +518,50 @@ app.post('/voice', async (req, res) => {
       'end_call': "Thank you for calling Ahad and Co. We're here to help. Goodbye."
     };
 
+    // ===== REPETITION PREVENTION =====
+    // Reset empty speech counter when we get actual speech
+    if (userSpeech && userSpeech.trim()) {
+      memory.empty_speech_count = 0;
+    }
+
     // Check if this state should use hardcoded response
     if (hardcodedStates[memory.flow_state] && !userSpeech) {
-      agentText = hardcodedStates[memory.flow_state];
-      console.log(`[${callSid}] Using HARDCODED response for ${memory.flow_state}`);
+      // Check if we already asked this question (same state, no speech = repetition)
+      if (memory.last_spoken_state === memory.flow_state) {
+        memory.empty_speech_count++;
+        console.log(`[${callSid}] Empty speech #${memory.empty_speech_count} in ${memory.flow_state}`);
+
+        // After 2 empty speeches, ask if they're still there
+        if (memory.empty_speech_count >= 2) {
+          agentText = "Are you still there?";
+          console.log(`[${callSid}] Asking if user is still there`);
+        } else {
+          // First empty speech after question - say "I didn't catch that" instead of repeating
+          agentText = "I didn't catch that. Could you please repeat?";
+          console.log(`[${callSid}] First empty speech - asking to repeat`);
+        }
+      } else {
+        // New state - ask the question normally
+        agentText = hardcodedStates[memory.flow_state];
+        memory.last_spoken_state = memory.flow_state;
+        console.log(`[${callSid}] Using HARDCODED response for ${memory.flow_state}`);
+      }
     }
     // Skip AI for awaiting_intent with no speech
     else if (memory.flow_state === 'awaiting_intent' && !userSpeech) {
-      agentText = '';  // Stay silent, just wait for user
-      console.log(`[${callSid}] Awaiting intent, no speech - staying silent`);
+      // Check for repetition in awaiting_intent too
+      if (memory.last_spoken_state === 'awaiting_intent') {
+        memory.empty_speech_count++;
+        if (memory.empty_speech_count >= 2) {
+          agentText = "Are you still there? How can I help you today?";
+        } else {
+          agentText = '';  // Stay silent on first timeout
+        }
+      } else {
+        agentText = '';  // Stay silent, just wait for user
+        memory.last_spoken_state = 'awaiting_intent';
+      }
+      console.log(`[${callSid}] Awaiting intent, no speech - empty count: ${memory.empty_speech_count}`);
     }
     // Use AI only for complex states that need dynamic content
     else {
@@ -542,6 +581,8 @@ app.post('/voice', async (req, res) => {
         // Replace with hardcoded response based on flow state
         agentText = hardcodedStates[memory.flow_state] || "How can I help you today?";
       }
+      // Track state for AI responses too
+      memory.last_spoken_state = memory.flow_state;
     }
 
     // Save user speech to history (assistant response saved later after postTransitionResponses)
@@ -583,6 +624,9 @@ app.post('/voice', async (req, res) => {
         } else {
           agentText = "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?";
         }
+        // Update last_spoken_state and reset counter after calendar check
+        memory.last_spoken_state = memory.flow_state;
+        memory.empty_speech_count = 0;
         // NOTE: History is saved later in the main flow after postTransitionResponses
         console.log(`[${callSid}] Using HARDCODED response for ${memory.flow_state}: ${agentText}`);
       } else {
@@ -1225,6 +1269,9 @@ app.post('/voice', async (req, res) => {
       // Use hardcoded response if available
       if (postTransitionResponses[memory.flow_state]) {
         agentText = postTransitionResponses[memory.flow_state];
+        // Update last_spoken_state since we're speaking for this new state
+        memory.last_spoken_state = memory.flow_state;
+        memory.empty_speech_count = 0;  // Reset counter on state change
         console.log(`[${callSid}] Using HARDCODED post-transition response for ${memory.flow_state}`);
       }
     }
@@ -1340,11 +1387,25 @@ app.post('/voice', async (req, res) => {
   }
 
   // Guard against empty responses (silence prevention)
-  // BUT allow silence when awaiting_intent (user hasn't spoken yet after greeting)
+  // BUT respect repetition prevention - don't ask same question twice
+  // If we've already asked this state's question, use gentler prompts
   if (!agentText || agentText.trim().length === 0) {
+    // Check if we've already asked the question for this state
+    const alreadyAsked = memory.last_spoken_state === memory.flow_state;
+
     if (memory.flow_state === 'awaiting_intent') {
       // Stay silent - waiting for user to speak first
       console.log(`[${callSid}] Awaiting intent - staying silent`);
+    } else if (alreadyAsked) {
+      // We already asked this question - DON'T repeat it
+      // Just wait silently or give a gentle nudge
+      if (memory.empty_speech_count >= 2) {
+        agentText = "Are you still there?";
+      } else {
+        // Stay silent and wait - don't interrupt
+        agentText = "";
+        console.log(`[${callSid}] Already asked for ${memory.flow_state}, staying silent to let user respond`);
+      }
     } else if (memory.flow_state === 'calendar_check' || memory.flow_state === 'offer_slots') {
       agentText = "One moment please.";
       console.log(`[${callSid}] Empty response in critical state, injecting filler`);
@@ -1394,6 +1455,64 @@ app.post('/voice', async (req, res) => {
     memory.flow_state === 'callback_end' ||
     memory.conversation_ended;
 
+  // ===== STATE-SPECIFIC SPEECH TIMEOUTS =====
+  // CRITICAL: Long timeouts to prevent interrupting users during data collection
+  // Users need time to think, spell emails slowly, and speak phone numbers
+  const getTimeouts = (state) => {
+    // Email states - users spell VERY slowly, need maximum time
+    // Example: "J... O... H... N... at... G... M... A... I... L... dot... com"
+    if (state.includes('email')) {
+      return { speechTimeout: 8, timeout: 15 };
+    }
+    // Phone number - users pause between digit groups
+    // Example: "five... one... two..." (pause) "three... four... five..." (pause) "six... seven... eight... nine"
+    if (state.includes('phone')) {
+      return { speechTimeout: 7, timeout: 12 };
+    }
+    // Name collection - users may have complex names or think
+    if (state.includes('first_name') || state.includes('last_name')) {
+      return { speechTimeout: 6, timeout: 10 };
+    }
+    // Reason/content - users may think before explaining
+    if (state.includes('content') || state.includes('reason') || state.includes('referral') || state.includes('welcome_back')) {
+      return { speechTimeout: 7, timeout: 12 };
+    }
+    // Previous client question - simple yes/no but give time
+    if (state.includes('previous_client')) {
+      return { speechTimeout: 5, timeout: 8 };
+    }
+    // Confirmation states - yes/no responses
+    if (state.includes('confirm')) {
+      return { speechTimeout: 4, timeout: 7 };
+    }
+    // Slot offer - user might think about the time
+    if (state.includes('offer_slots') || state.includes('preferred_time')) {
+      return { speechTimeout: 6, timeout: 10 };
+    }
+    // Default for other states
+    return { speechTimeout: 5, timeout: 8 };
+  };
+
+  const timeouts = getTimeouts(memory.flow_state);
+  console.log(`[${callSid}] Using timeouts for ${memory.flow_state}: speechTimeout=${timeouts.speechTimeout}, timeout=${timeouts.timeout}`);
+
+  // ===== STATE-SPECIFIC SPEECH HINTS =====
+  // Help Twilio understand expected input for better recognition
+  const getSpeechHints = (state) => {
+    if (state.includes('email')) {
+      return 'a b c d e f g h i j k l m n o p q r s t u v w x y z at gmail yahoo hotmail outlook dot com net org';
+    }
+    if (state.includes('phone')) {
+      return 'zero one two three four five six seven eight nine';
+    }
+    if (state.includes('confirm') || state.includes('previous_client')) {
+      return 'yes yeah no nope correct right wrong new returning previous client';
+    }
+    return '';
+  };
+
+  const speechHints = getSpeechHints(memory.flow_state);
+
   // Generate and play audio (same logic for both continuing and ending)
   // Use Twilio TTS directly for more reliability (ElevenLabs can cause voice drops)
   if (shouldEnd) {
@@ -1404,33 +1523,45 @@ app.post('/voice', async (req, res) => {
     console.log(`[${callSid}] Using Twilio TTS for goodbye`);
   } else if (agentText && agentText.trim().length > 0) {
     // Only speak if there's something to say
-    // speechTimeout: 3 seconds to prevent interrupting user mid-speech
-    const gather = twiml.gather({
+    // Use state-specific timeouts to prevent interrupting user
+    // CRITICAL: Enhanced speech model + long timeouts = patient listening
+    const gatherOptions = {
       input: 'speech',
       action: '/voice',
       method: 'POST',
-      speechTimeout: 3,
-      timeout: 5,
+      speechTimeout: timeouts.speechTimeout,
+      timeout: timeouts.timeout,
       language: 'en-US',
-      speechModel: 'phone_call'
-    });
+      speechModel: 'phone_call',
+      enhanced: true  // Better speech recognition
+    };
+    // Add hints if available for this state
+    if (speechHints) {
+      gatherOptions.hints = speechHints;
+    }
+    const gather = twiml.gather(gatherOptions);
     gather.say({
       voice: "Polly.Joanna-Neural",
       language: "en-US"
     }, agentText);
-    console.log(`[${callSid}] Using Twilio TTS`);
+    console.log(`[${callSid}] Using Twilio TTS with timeouts: speech=${timeouts.speechTimeout}s, wait=${timeouts.timeout}s`);
   } else {
     // No text to say - just gather speech silently (awaiting_intent)
-    // speechTimeout: 3 seconds to prevent interrupting user mid-speech
-    twiml.gather({
+    // Use state-specific timeouts
+    const gatherOptions = {
       input: 'speech',
       action: '/voice',
       method: 'POST',
-      speechTimeout: 3,
-      timeout: 5,
+      speechTimeout: timeouts.speechTimeout,
+      timeout: timeouts.timeout,
       language: 'en-US',
-      speechModel: 'phone_call'
-    });
+      speechModel: 'phone_call',
+      enhanced: true
+    };
+    if (speechHints) {
+      gatherOptions.hints = speechHints;
+    }
+    twiml.gather(gatherOptions);
     console.log(`[${callSid}] Silent gather - waiting for user speech`);
   }
 
