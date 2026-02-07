@@ -109,6 +109,15 @@ async function createCalComBooking(slotISO, userInfo) {
     return null;
   }
 
+  // Log booking attempt details
+  console.log('Cal.com booking attempt:', {
+    eventTypeId: calComEventTypeId,
+    start: slotISO,
+    name: `${userInfo.first_name} ${userInfo.last_name}`,
+    email: userInfo.email,
+    phone: userInfo.phone
+  });
+
   try {
     const response = await axios.post(
       `https://api.cal.com/v1/bookings?apiKey=${calComApiKey}`,
@@ -128,10 +137,20 @@ async function createCalComBooking(slotISO, userInfo) {
       { timeout: 10000 }
     );
 
-    console.log('Cal.com booking created:', response.data?.id);
+    console.log('Cal.com booking SUCCESS:', {
+      bookingId: response.data?.id,
+      uid: response.data?.uid,
+      status: response.data?.status
+    });
     return response.data;
   } catch (error) {
-    console.error('Cal.com booking error:', error.message);
+    // Log detailed error info
+    console.error('Cal.com booking FAILED:', {
+      message: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data
+    });
     return null;
   }
 }
@@ -209,8 +228,26 @@ function extractName(speech) {
   // Remove trailing punctuation
   name = name.replace(/[.,!?]$/g, '');
 
+  // ===== CRITICAL: Handle spelled-out names =====
+  // When user spells "TEST" as "T e, s t" or "T. E. S. T."
+  // Detect if input looks like spelled letters and join them
+  // Remove periods/commas between letters (speech artifacts)
+  name = name.replace(/\.\s*/g, ' ');  // "T. E." → "T E"
+  name = name.replace(/,\s*/g, ' ');   // "e, s" → "e s"
+
   // Clean up extra spaces
   name = name.replace(/\s+/g, ' ').trim();
+
+  // Check if input looks like spelled-out letters (mostly 1-2 char words)
+  const words = name.split(' ');
+  const singleLetterCount = words.filter(w => w.length === 1).length;
+  if (singleLetterCount > words.length / 2 && words.length > 2) {
+    // More than half are single letters - join them all together
+    name = words.join('').toLowerCase();
+    // Capitalize first letter
+    name = name.charAt(0).toUpperCase() + name.slice(1);
+    console.log(`Detected spelled-out name, joined to: "${name}"`);
+  }
 
   // Reject if contains question mark
   if (/\?/.test(name)) {
@@ -232,9 +269,10 @@ function extractName(speech) {
   }
 
   // Take only the first 3 words max (to handle "John Michael Smith" but not long sentences)
-  const words = name.split(' ');
-  if (words.length > 3) {
-    name = words.slice(0, 3).join(' ');
+  // Only apply this if NOT spelled out (spelled names are already joined)
+  const finalWords = name.split(' ');
+  if (finalWords.length > 3) {
+    name = finalWords.slice(0, 3).join(' ');
     console.log(`Name truncated to first 3 words: "${name}"`);
   }
 
