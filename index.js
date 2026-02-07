@@ -150,8 +150,8 @@ function detectSlotAcceptance(speech, offeredSlots) {
   if (/(fifth|5|five)/i.test(lower) && offeredSlots[4]) return offeredSlots[4];
 
   // Generic acceptance patterns (more flexible - can appear anywhere in response)
-  // Includes patterns like "Okay. Yes, it can." or "Yes that works" or "Sure"
-  if (/(^|\s)(yes|yeah|sure|ok|okay|that works|sounds good|perfect|works for me|either|both|any)($|[\s.,!])/i.test(lower)) {
+  // Includes patterns like "Okay. Yes, it can." or "Yes that works" or "Sure" or "That's good"
+  if (/(^|\s)(yes|yeah|sure|ok|okay|that works|that's good|sounds good|perfect|works for me|good|great|fine|either|both|any)($|[\s.,!])/i.test(lower)) {
     return offeredSlots[0];
   }
 
@@ -255,6 +255,17 @@ function extractEmail(speech) {
 
   // Remove conversation prefixes and filler words
   email = email.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?|so,?|well,?|it's|it is|my email( address)? is|the email is|that's|that is)\s*/gi, '');
+
+  // ===== CRITICAL: Remove speech punctuation artifacts =====
+  // When users spell slowly, Twilio adds periods/commas as punctuation:
+  // "F. A f a e, e d. I n. S t e r" → should be "saeedinster"
+  // These are NOT actual dots in the email - just speech artifacts
+  email = email.replace(/\.\s+/g, ' ');   // "F. A" → "F A"
+  email = email.replace(/,\s*/g, ' ');    // "e, e" → "e e"
+  email = email.replace(/\s+\./g, ' ');   // "a ." → "a "
+  // Remove standalone periods that aren't part of domain
+  email = email.replace(/^\./g, '');      // Leading dot
+  email = email.replace(/\s\.\s/g, ' ');  // " . " → " "
 
   // ===== PHONETIC LETTER CONVERSION =====
   // Convert spoken letter names to actual letters
