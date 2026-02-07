@@ -248,119 +248,174 @@ function extractName(speech) {
   return name;
 }
 
-// Extract email from speech (improved - more lenient for voice input)
+// Extract email from speech (improved - handles phonetic letters)
 function extractEmail(speech) {
   let email = speech.toLowerCase().trim();
   console.log(`Extracting email from: "${email}"`);
 
-  // Remove conversation prefixes
-  email = email.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?|it's|my email( address)? is|the email is)\s*/gi, '');
+  // Remove conversation prefixes and filler words
+  email = email.replace(/^(sure,?|okay,?|yes,?|yeah,?|um,?|uh,?|so,?|well,?|it's|it is|my email( address)? is|the email is|that's|that is)\s*/gi, '');
 
-  // FIRST: Convert speech to email format BEFORE removing spaces (word boundaries need spaces)
+  // ===== PHONETIC LETTER CONVERSION =====
+  // Convert spoken letter names to actual letters
+  const phoneticMap = {
+    // Standard phonetic alphabet
+    'alpha': 'a', 'bravo': 'b', 'charlie': 'c', 'delta': 'd', 'echo': 'e',
+    'foxtrot': 'f', 'golf': 'g', 'hotel': 'h', 'india': 'i', 'juliet': 'j',
+    'kilo': 'k', 'lima': 'l', 'mike': 'm', 'november': 'n', 'oscar': 'o',
+    'papa': 'p', 'quebec': 'q', 'romeo': 'r', 'sierra': 's', 'tango': 't',
+    'uniform': 'u', 'victor': 'v', 'whiskey': 'w', 'xray': 'x', 'yankee': 'y', 'zulu': 'z',
+    // Common speech-to-text phonetic outputs
+    'ay': 'a', 'aye': 'a', 'eh': 'a',
+    'bee': 'b', 'be': 'b',
+    'see': 'c', 'sea': 'c', 'cee': 'c',
+    'dee': 'd', 'de': 'd',
+    'ee': 'e', 'eee': 'e',
+    'eff': 'f', 'ef': 'f',
+    'gee': 'g', 'ge': 'g', 'ji': 'g',
+    'aitch': 'h', 'ach': 'h', 'eich': 'h',
+    'eye': 'i', 'ai': 'i',
+    'jay': 'j', 'jey': 'j',
+    'kay': 'k', 'key': 'k', 'kei': 'k',
+    'el': 'l', 'ell': 'l',
+    'em': 'm', 'emm': 'm',
+    'en': 'n', 'enn': 'n',
+    'oh': 'o', 'owe': 'o',
+    'pee': 'p', 'pe': 'p',
+    'cue': 'q', 'que': 'q', 'queue': 'q',
+    'are': 'r', 'ar': 'r', 'arr': 'r',
+    'ess': 's', 'es': 's', 'ass': 's',
+    'tee': 't', 'te': 't', 'tea': 't',
+    'you': 'u', 'yu': 'u', 'ewe': 'u',
+    'vee': 'v', 've': 'v',
+    'double you': 'w', 'double u': 'w', 'dub': 'w', 'dubya': 'w',
+    'ex': 'x', 'ecks': 'x',
+    'why': 'y', 'wye': 'y',
+    'zee': 'z', 'zed': 'z', 'zee': 'z',
+    // Numbers
+    'zero': '0', 'one': '1', 'two': '2', 'too': '2', 'to': '2',
+    'three': '3', 'four': '4', 'for': '4', 'fore': '4',
+    'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'ate': '8',
+    'nine': '9', 'niner': '9'
+  };
+
+  // Replace phonetic words with letters
+  for (const [phonetic, letter] of Object.entries(phoneticMap)) {
+    const regex = new RegExp(`\\b${phonetic}\\b`, 'gi');
+    email = email.replace(regex, letter);
+  }
+
+  // Convert "at" and "dot" to symbols
   email = email.replace(/\s+at\s+/gi, '@');
   email = email.replace(/\bat\b/gi, '@');
   email = email.replace(/\s+dot\s+/gi, '.');
   email = email.replace(/\bdot\b/gi, '.');
+  email = email.replace(/\bperiod\b/gi, '.');
+  email = email.replace(/\bpoint\b/gi, '.');
 
   // Handle spelled out letters with spaces (e.g., "s a e e d")
-  // If mostly single letters with spaces, join them
   const words = email.split(/\s+/);
   if (words.length > 3 && words.filter(w => w.length === 1).length > words.length / 2) {
     email = words.join('');
   }
 
-  // NOW remove remaining spaces
+  // Remove remaining spaces
   email = email.replace(/\s+/g, '');
 
-  // Clean up common speech-to-text issues
-  email = email.replace(/\.+$/g, '');  // Remove trailing dots
-  email = email.replace(/@@+/g, '@');  // Fix double @
+  // Clean up common issues
+  email = email.replace(/\.+$/g, '');   // Remove trailing dots
+  email = email.replace(/^\.+/g, '');   // Remove leading dots
+  email = email.replace(/@@+/g, '@');   // Fix double @
   email = email.replace(/\.\.+/g, '.'); // Fix double dots
+  email = email.replace(/@\./g, '@');   // Fix @. -> @
+  email = email.replace(/\.@/g, '@');   // Fix .@ -> @
+
+  // Remove any non-email characters
+  email = email.replace(/[^a-z0-9@._-]/g, '');
 
   console.log(`Processed email: "${email}"`);
 
-  // More lenient validation - just needs @ and something after it
-  // Accept if it has @ and at least looks like an email
+  // Lenient validation - accept if it has @
   if (!/@/.test(email)) {
-    console.log(`Invalid email detected: "${email}" - missing @`);
+    console.log(`No @ found in: "${email}"`);
     return '';
   }
 
-  // If it has @ but no dot, still accept it (user might have said domain wrong)
-  // We'll confirm with them anyway
   return email;
 }
 
-// Spell out email for TTS - spell username letter by letter, but say common domains naturally
-// Example: "saeed@gmail.com" -> "S. A. E. E. D. ... at gmail dot com"
-// Example: "john.doe@yahoo.com" -> "J. O. H. N. ... dot ... D. O. E. ... at yahoo dot com"
-// This prevents spelling out "G. M. A. I. L." which sounds unnatural
+// Spell out email for TTS - SIMPLE and CLEAR
+// Example: "saeed@gmail.com" -> "S A E E D at gmail dot com"
 function spellEmailForSpeech(email) {
   if (!email) return 'your email';
 
-  // Common domains that should be spoken naturally (not spelled)
+  // Clean email first
+  email = email.toLowerCase().trim();
+  email = email.replace(/[^a-z0-9@._-]/g, '');
+
+  // Common domains spoken naturally
   const commonDomains = {
     'gmail.com': 'gmail dot com',
     'yahoo.com': 'yahoo dot com',
     'hotmail.com': 'hotmail dot com',
     'outlook.com': 'outlook dot com',
     'aol.com': 'A O L dot com',
-    'icloud.com': 'i cloud dot com',
+    'icloud.com': 'icloud dot com',
     'msn.com': 'M S N dot com',
     'live.com': 'live dot com',
     'comcast.net': 'comcast dot net',
     'verizon.net': 'verizon dot net',
     'att.net': 'A T T dot net',
-    'sbcglobal.net': 'S B C global dot net',
     'me.com': 'me dot com',
     'mac.com': 'mac dot com',
-    'protonmail.com': 'proton mail dot com',
+    'protonmail.com': 'protonmail dot com',
     'mail.com': 'mail dot com'
   };
 
-  // Split email into username and domain
   const atIndex = email.indexOf('@');
   if (atIndex === -1) {
-    // No @ sign - spell entire thing
-    return spellPartForSpeech(email);
+    // No @ - just spell it
+    return spellPartSimple(email);
   }
 
   const username = email.substring(0, atIndex);
   const domain = email.substring(atIndex + 1).toLowerCase();
 
-  // Spell the username letter by letter
-  const spelledUsername = spellPartForSpeech(username);
+  // Spell username simply
+  const spelledUsername = spellPartSimple(username);
 
-  // Check if domain is common - if so, say it naturally
+  // Use natural domain if common, otherwise spell it
   if (commonDomains[domain]) {
-    return `${spelledUsername} ... at ${commonDomains[domain]}`;
+    return `${spelledUsername}, at, ${commonDomains[domain]}`;
   }
 
-  // For unknown domains, spell the whole domain
-  const spelledDomain = spellPartForSpeech(domain);
-  return `${spelledUsername} ... at ... ${spelledDomain}`;
+  // Spell unknown domain
+  const spelledDomain = spellPartSimple(domain);
+  return `${spelledUsername}, at, ${spelledDomain}`;
 }
 
-// Helper function to spell a string letter by letter for TTS
-function spellPartForSpeech(text) {
+// Simple letter spelling - no extra dots, just spaces between letters
+// Example: "saeed" -> "S A E E D"
+// Example: "john.doe" -> "J O H N dot D O E"
+function spellPartSimple(text) {
   if (!text) return '';
 
-  let spelled = '';
+  let result = [];
   for (let i = 0; i < text.length; i++) {
-    const char = text[i].toUpperCase();
+    const char = text[i];
     if (char === '.') {
-      spelled += ' ... dot ... ';
+      result.push('dot');
     } else if (char === '-') {
-      spelled += ' ... dash ... ';
+      result.push('dash');
     } else if (char === '_') {
-      spelled += ' ... underscore ... ';
+      result.push('underscore');
     } else if (/[0-9]/.test(char)) {
-      spelled += char + '. ';
-    } else if (/[A-Z]/.test(char)) {
-      spelled += char + '. ';
+      result.push(char);
+    } else if (/[a-zA-Z]/.test(char)) {
+      result.push(char.toUpperCase());
     }
   }
-  return spelled.trim();
+  return result.join(' ');
 }
 
 // Format phone number for TTS - spell out EACH digit individually
@@ -1237,7 +1292,7 @@ app.post('/voice', async (req, res) => {
         'message_last_name': "And your last name?",
         'message_phone': "What is the best phone number to reach you?",
         'message_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
-        'message_email_confirm': `Let me read that back to make sure I have it right. ... ${spellEmailForSpeech(memory.email_spelled)} ... Is that correct?`,
+        'message_email_confirm': `Let me read that back. ${spellEmailForSpeech(memory.email_spelled)}. Is that correct?`,
         'message_content': "What is the reason for your call?",
         'message_confirm': `Let me confirm your information. ... Your name is ${memory.first_name || ''} ${memory.last_name || ''}. ... Phone number: ${formatPhoneForSpeech(memory.phone)}. ... Email: ${spellEmailForSpeech(memory.email)}. ... Is all of that correct?`,
         'message_complete': "Thank you. Your message has been received. Someone will call you back during business hours. Thank you for calling Ahad and Co. We're here to help. Goodbye.",
@@ -1247,7 +1302,7 @@ app.post('/voice', async (req, res) => {
         'appointment_last_name': "And your last name?",
         'appointment_phone': "And your phone number? Please speak slowly.",
         'appointment_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
-        'appointment_email_confirm': `Let me read that back to make sure I have it right. ... ${spellEmailForSpeech(memory.email_spelled)} ... Is that correct?`,
+        'appointment_email_confirm': `Let me read that back. ${spellEmailForSpeech(memory.email_spelled)}. Is that correct?`,
         'appointment_previous_client': "Are you a new client or a previous client with Ahad and Co?",
         'appointment_referral': "How did you hear about us?",
         'appointment_call_reason': "What is the reason for your call?",
