@@ -948,12 +948,26 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_email') {
-        // Capture email from user - be very lenient, confirmation will verify
+        // Capture email from user - REQUIRE valid extraction
         const extracted = extractEmail(userSpeech);
-        // Accept whatever we got, even if extraction failed - confirmation will handle it
-        memory.email_spelled = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
-        memory.flow_state = 'appointment_email_confirm';
-        console.log(`[${callSid}] Appointment email captured: ${memory.email_spelled}`);
+
+        if (extracted && extracted.length > 0 && extracted.includes('@')) {
+          // Valid email extracted - proceed to confirmation
+          memory.email_spelled = extracted;
+          memory.flow_state = 'appointment_email_confirm';
+          memory.email_retry = 0;
+          console.log(`[${callSid}] Appointment email captured: ${memory.email_spelled}`);
+        } else if (extracted && extracted.length > 0) {
+          // Partial email (no @) - might be just username, keep collecting
+          memory.email_spelled = extracted;
+          memory.flow_state = 'appointment_email_confirm';
+          console.log(`[${callSid}] Partial email captured (no @): ${memory.email_spelled}`);
+        } else {
+          // Failed extraction - DON'T use raw speech, ask again
+          memory.email_retry = (memory.email_retry || 0) + 1;
+          console.log(`[${callSid}] Email extraction failed, asking again (retry ${memory.email_retry})`);
+          // Stay in appointment_email state
+        }
       }
 
       // SIMPLIFIED: Email confirmation - agent reads back email, waits for yes/no
@@ -1009,17 +1023,32 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_phone') {
-        // Extract digits, be lenient - accept anything with at least 7 digits
-        const extracted = userSpeech.replace(/\D/g, '');
+        // Extract digits - CRITICAL: Take only LAST 10 digits to handle duplicates
+        // User might say "917-545-8915, that's 917-545-8915" = 20 digits captured
+        let extracted = userSpeech.replace(/\D/g, '');
+
+        // If more than 11 digits, take only the LAST 10 (or 11 if starts with 1)
+        if (extracted.length > 11) {
+          extracted = extracted.slice(-10);
+          console.log(`[${callSid}] Phone had ${userSpeech.replace(/\D/g, '').length} digits, taking last 10: ${extracted}`);
+        } else if (extracted.length === 11 && extracted[0] === '1') {
+          // Keep 11 digits if starts with 1 (country code)
+          console.log(`[${callSid}] Phone is 11 digits with country code: ${extracted}`);
+        } else if (extracted.length > 10) {
+          // More than 10 but doesn't start with 1, take last 10
+          extracted = extracted.slice(-10);
+          console.log(`[${callSid}] Phone trimmed to last 10: ${extracted}`);
+        }
+
         if (extracted && extracted.length >= 7) {
           memory.phone = extracted;
           memory.flow_state = 'appointment_email';
           console.log(`[${callSid}] Appointment phone: ${memory.phone}`);
         } else {
-          // Accept whatever digits we got and move on
-          memory.phone = extracted || userSpeech.replace(/\D/g, '') || 'not provided';
-          memory.flow_state = 'appointment_email';
-          console.log(`[${callSid}] Appointment phone (lenient): ${memory.phone}`);
+          // Not enough digits - ask again
+          memory.phone_retry = (memory.phone_retry || 0) + 1;
+          console.log(`[${callSid}] Phone too short (${extracted.length} digits), asking again (retry ${memory.phone_retry})`);
+          // Stay in appointment_phone state
         }
       }
 
@@ -1149,17 +1178,32 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'calendar_check';
           memory.calendar_check_announced = true;
         } else {
-          // Extract digits, be lenient - accept anything with at least 7 digits
-          const extracted = userSpeech.replace(/\D/g, '');
+          // Extract digits - CRITICAL: Take only LAST 10 digits to handle duplicates
+          // User might say "917-545-8915, that's 917-545-8915" = 20 digits captured
+          let extracted = userSpeech.replace(/\D/g, '');
+
+          // If more than 11 digits, take only the LAST 10 (or 11 if starts with 1)
+          if (extracted.length > 11) {
+            extracted = extracted.slice(-10);
+            console.log(`[${callSid}] Phone had ${userSpeech.replace(/\D/g, '').length} digits, taking last 10: ${extracted}`);
+          } else if (extracted.length === 11 && extracted[0] === '1') {
+            // Keep 11 digits if starts with 1 (country code)
+            console.log(`[${callSid}] Phone is 11 digits with country code: ${extracted}`);
+          } else if (extracted.length > 10) {
+            // More than 10 but doesn't start with 1, take last 10
+            extracted = extracted.slice(-10);
+            console.log(`[${callSid}] Phone trimmed to last 10: ${extracted}`);
+          }
+
           if (extracted && extracted.length >= 7) {
             memory.phone = extracted;
             memory.flow_state = 'message_email';
             console.log(`[${callSid}] Message phone: ${memory.phone}`);
           } else {
-            // Accept whatever digits we got and move on
-            memory.phone = extracted || userSpeech.replace(/\D/g, '') || 'not provided';
-            memory.flow_state = 'message_email';
-            console.log(`[${callSid}] Message phone (lenient): ${memory.phone}`);
+            // Not enough digits - ask again
+            memory.phone_retry = (memory.phone_retry || 0) + 1;
+            console.log(`[${callSid}] Phone too short (${extracted.length} digits), asking again (retry ${memory.phone_retry})`);
+            // Stay in message_phone state
           }
         }
       }
@@ -1172,12 +1216,26 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'calendar_check';
           memory.calendar_check_announced = true;
         } else {
-          // Capture email from user - be very lenient, confirmation will verify
+          // Capture email from user - REQUIRE valid extraction
           const extracted = extractEmail(userSpeech);
-          // Accept whatever we got, even if extraction failed - confirmation will handle it
-          memory.email_spelled = (extracted && extracted.length > 0) ? extracted : userSpeech.trim();
-          memory.flow_state = 'message_email_confirm';
-          console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
+
+          if (extracted && extracted.length > 0 && extracted.includes('@')) {
+            // Valid email extracted - proceed to confirmation
+            memory.email_spelled = extracted;
+            memory.flow_state = 'message_email_confirm';
+            memory.email_retry = 0;
+            console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
+          } else if (extracted && extracted.length > 0) {
+            // Partial email (no @) - might be just username, keep collecting
+            memory.email_spelled = extracted;
+            memory.flow_state = 'message_email_confirm';
+            console.log(`[${callSid}] Partial message email captured (no @): ${memory.email_spelled}`);
+          } else {
+            // Failed extraction - DON'T use raw speech, ask again
+            memory.email_retry = (memory.email_retry || 0) + 1;
+            console.log(`[${callSid}] Message email extraction failed, asking again (retry ${memory.email_retry})`);
+            // Stay in message_email state
+          }
         }
       }
 
@@ -1290,8 +1348,12 @@ app.post('/voice', async (req, res) => {
           ? "I just need your first name. What is your first name?"
           : "May I have your first name, please?",
         'message_last_name': "And your last name?",
-        'message_phone': "What is the best phone number to reach you?",
-        'message_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
+        'message_phone': memory.phone_retry > 0
+          ? "I need your 10-digit phone number. Please say each digit slowly."
+          : "What is the best phone number to reach you?",
+        'message_email': memory.email_retry > 0
+          ? "I need your email address. Please spell it out slowly, letter by letter, including 'at' and 'dot'."
+          : "And your email address? Please spell it out for me, letter by letter, slowly.",
         'message_email_confirm': `Let me read that back. ${spellEmailForSpeech(memory.email_spelled)}. Is that correct?`,
         'message_content': "What is the reason for your call?",
         'message_confirm': `Let me confirm your information. ... Your name is ${memory.first_name || ''} ${memory.last_name || ''}. ... Phone number: ${formatPhoneForSpeech(memory.phone)}. ... Email: ${spellEmailForSpeech(memory.email)}. ... Is all of that correct?`,
@@ -1300,8 +1362,12 @@ app.post('/voice', async (req, res) => {
           ? "I just need your first name. What is your first name?"
           : "Great! Let me collect your information. May I have your first name, please?",
         'appointment_last_name': "And your last name?",
-        'appointment_phone': "And your phone number? Please speak slowly.",
-        'appointment_email': "And your email address? Please spell it out for me, letter by letter, slowly.",
+        'appointment_phone': memory.phone_retry > 0
+          ? "I need your 10-digit phone number. Please say each digit slowly."
+          : "And your phone number? Please speak slowly.",
+        'appointment_email': memory.email_retry > 0
+          ? "I need your email address. Please spell it out slowly, letter by letter, including 'at' and 'dot'."
+          : "And your email address? Please spell it out for me, letter by letter, slowly.",
         'appointment_email_confirm': `Let me read that back. ${spellEmailForSpeech(memory.email_spelled)}. Is that correct?`,
         'appointment_previous_client': "Are you a new client or a previous client with Ahad and Co?",
         'appointment_referral': "How did you hear about us?",
