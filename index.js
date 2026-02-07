@@ -365,11 +365,31 @@ function extractEmail(speech) {
   // Handle spelled out letters with spaces (e.g., "s a e e d")
   const words = email.split(/\s+/);
   if (words.length > 3 && words.filter(w => w.length === 1).length > words.length / 2) {
-    email = words.join('');
+    // Before joining, remove any periods from single-letter words (speech artifacts)
+    // e.g., ["f.", "a", "e", "e", "d"] → ["f", "a", "e", "e", "d"]
+    const cleanedWords = words.map(w => w.length <= 2 ? w.replace(/\./g, '') : w);
+    email = cleanedWords.join('');
   }
 
   // Remove remaining spaces
   email = email.replace(/\s+/g, '');
+
+  // CRITICAL: Remove periods from username that look like speech artifacts
+  // Pattern: single letter followed by period followed by single letter (e.g., "f.a.e.e.d")
+  // This is clearly spelled-out letters, not a real email format
+  if (email.includes('@')) {
+    const atIndex = email.indexOf('@');
+    let username = email.substring(0, atIndex);
+    const domain = email.substring(atIndex);
+
+    // If username looks like spelled letters with periods (e.g., "f.a.e.e.d")
+    // Remove all periods - users don't spell "john dot doe", they spell "j o h n d o e"
+    if (/^[a-z](\.[a-z])+$/i.test(username) || /\.[a-z]\./i.test(username)) {
+      username = username.replace(/\./g, '');
+      console.log(`Removed speech-artifact periods from username: ${username}`);
+    }
+    email = username + domain;
+  }
 
   // Clean up common issues
   email = email.replace(/\.+$/g, '');   // Remove trailing dots
