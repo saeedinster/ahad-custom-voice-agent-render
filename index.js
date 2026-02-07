@@ -856,10 +856,17 @@ app.post('/voice', async (req, res) => {
       }
 
       // ===== OFFICE HOURS FLOW =====
-      // STRICT: NEVER route to booking/calendar from this flow - ONLY message or decline
+      // Allow switching to appointment if user asks
       else if (memory.flow_state === 'office_hours_message') {
+        // FIRST: Check if user wants to book appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment - switching to calendar check`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
+        }
         // Check if user wants to leave a message
-        if (/yes|yeah|sure|ok|okay|alright|message|please/i.test(lowerSpeech)) {
+        else if (/yes|yeah|sure|ok|okay|alright|message|please/i.test(lowerSpeech)) {
           memory.flow_state = 'message_first_name';
           console.log(`[${callSid}] User agreed to leave message`);
         }
@@ -874,17 +881,24 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'office_hours_message';
           console.log(`[${callSid}] User still wants to speak to someone - re-explaining`);
         }
-        // Default: assume they want to leave a message (NEVER route to booking)
+        // Default: assume they want to leave a message
         else {
           memory.flow_state = 'message_first_name';
           console.log(`[${callSid}] Unclear response, defaulting to message flow`);
         }
       }
 
-      // ===== NEW: INQUIRY INTENT HANDLER =====
-      // STRICT: NEVER route to booking/calendar from this flow - ONLY message or decline
+      // ===== INQUIRY INTENT HANDLER =====
+      // Allow switching to appointment if user asks
       else if (memory.flow_state === 'inquiry_intent') {
-        if (/yes|yeah|sure|ok|okay|alright|message|please/i.test(lowerSpeech)) {
+        // FIRST: Check if user wants to book appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment - switching to calendar check`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
+        }
+        else if (/yes|yeah|sure|ok|okay|alright|message|please/i.test(lowerSpeech)) {
           // User wants to leave a message
           memory.flow_state = 'message_first_name';
           console.log(`[${callSid}] User agreed to leave message`);
@@ -894,16 +908,23 @@ app.post('/voice', async (req, res) => {
           memory.conversation_ended = true;
           console.log(`[${callSid}] User declined message - ending call`);
         } else {
-          // Default: assume they want to leave a message (NEVER route to booking)
+          // Default: assume they want to leave a message
           memory.flow_state = 'message_first_name';
           console.log(`[${callSid}] Unclear response in inquiry, defaulting to message flow`);
         }
       }
 
-      // ===== NEW: OFFICE HOURS QUESTION HANDLER =====
-      // STRICT: NEVER route to booking/calendar from this flow - ONLY message or decline
+      // ===== OFFICE HOURS QUESTION HANDLER =====
+      // Allow switching to appointment if user asks
       else if (memory.flow_state === 'office_hours_question') {
-        if (/yes|yeah|sure|ok|message|please|callback|call back/i.test(lowerSpeech)) {
+        // FIRST: Check if user wants to book appointment
+        if (/appointment|book|schedule|meeting|consultation/i.test(lowerSpeech)) {
+          console.log(`[${callSid}] User wants appointment - switching to calendar check`);
+          memory.intent = 'appointment';
+          memory.flow_state = 'calendar_check';
+          memory.calendar_check_announced = true;
+        }
+        else if (/yes|yeah|sure|ok|message|please|callback|call back/i.test(lowerSpeech)) {
           // User wants to leave a message
           memory.flow_state = 'message_first_name';
         } else if (/no|nope|not|later|goodbye|bye/i.test(lowerSpeech)) {
@@ -911,7 +932,7 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'office_hours_declined';
           memory.conversation_ended = true;
         } else {
-          // Unclear - default to message flow (NEVER route to booking)
+          // Default: assume they want to leave a message
           memory.flow_state = 'message_first_name';
           console.log(`[${callSid}] Unclear response in office_hours_question, defaulting to message flow`);
         }
@@ -1626,41 +1647,38 @@ app.post('/voice', async (req, res) => {
     memory.conversation_ended;
 
   // ===== STATE-SPECIFIC SPEECH TIMEOUTS =====
-  // CRITICAL: Long timeouts to prevent interrupting users during data collection
-  // Users need time to think, spell emails slowly, and speak phone numbers
+  // Balanced: Not too long (avoid pauses), not too short (allow user to speak)
   const getTimeouts = (state) => {
-    // Email states - users spell VERY slowly, need maximum time
-    // Example: "J... O... H... N... at... G... M... A... I... L... dot... com"
+    // Email states - give time for spelling
     if (state.includes('email')) {
-      return { speechTimeout: 8, timeout: 15 };
+      return { speechTimeout: 5, timeout: 10 };
     }
-    // Phone number - users pause between digit groups
-    // Example: "five... one... two..." (pause) "three... four... five..." (pause) "six... seven... eight... nine"
+    // Phone number - users need to say 10 digits
     if (state.includes('phone')) {
-      return { speechTimeout: 7, timeout: 12 };
+      return { speechTimeout: 5, timeout: 10 };
     }
-    // Name collection - users may have complex names or think
+    // Name collection - quick responses
     if (state.includes('first_name') || state.includes('last_name')) {
-      return { speechTimeout: 6, timeout: 10 };
+      return { speechTimeout: 4, timeout: 7 };
     }
-    // Reason/content - users may think before explaining
+    // Reason/content - users may explain
     if (state.includes('content') || state.includes('reason') || state.includes('referral') || state.includes('welcome_back')) {
-      return { speechTimeout: 7, timeout: 12 };
+      return { speechTimeout: 5, timeout: 10 };
     }
-    // Previous client question - simple yes/no but give time
+    // Previous client question - simple yes/no
     if (state.includes('previous_client')) {
-      return { speechTimeout: 5, timeout: 8 };
+      return { speechTimeout: 3, timeout: 6 };
     }
     // Confirmation states - yes/no responses
     if (state.includes('confirm')) {
+      return { speechTimeout: 3, timeout: 5 };
+    }
+    // Slot offer - user decides yes/no
+    if (state.includes('offer_slots') || state.includes('preferred_time')) {
       return { speechTimeout: 4, timeout: 7 };
     }
-    // Slot offer - user might think about the time
-    if (state.includes('offer_slots') || state.includes('preferred_time')) {
-      return { speechTimeout: 6, timeout: 10 };
-    }
     // Default for other states
-    return { speechTimeout: 5, timeout: 8 };
+    return { speechTimeout: 3, timeout: 6 };
   };
 
   const timeouts = getTimeouts(memory.flow_state);
