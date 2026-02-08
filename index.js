@@ -1090,7 +1090,7 @@ app.post('/voice', async (req, res) => {
           memory.email_retry = 0;
           memory.flow_state = 'appointment_email';
           console.log(`[${callSid}] Email incorrect, restarting collection`);
-        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct|^good|^great|^ok\b|^okay|sounds good|that's good|perfect|all good|absolutely|definitely/i.test(lowerSpeech)) {
+        } else if (/\b(yes|yeah|yep|yup|correct|right|good|great|ok|okay|perfect|fine|sure|absolutely|definitely)\b|that's right|that is correct|that's correct|sounds good|that's good|all good|that works/i.test(lowerSpeech)) {
           // Email confirmed - proceed to next question
           memory.email = memory.email_spelled;
           memory.flow_state = 'appointment_previous_client';  // Question 5
@@ -1098,35 +1098,25 @@ app.post('/voice', async (req, res) => {
         } else {
           // Check if user is providing ADDITIONAL email content (like "gmail.com" or "@gmail.com")
           // This happens when user is adding domain to incomplete email
-          const domainPattern = /(@?)(gmail|yahoo|hotmail|outlook|aol|icloud|msn|live|comcast|verizon|att|mail|proton)\s*(\.|\s*dot\s*)\s*(com|net|org)/i;
-          const additionalLetters = /^[a-z\s@\.]+$/i.test(userSpeech.trim()) && userSpeech.trim().length > 1;
-
-          if (domainPattern.test(lowerSpeech)) {
-            // User is providing domain - append to existing email
-            let domain = lowerSpeech.replace(/\s+dot\s+/gi, '.').replace(/\s+at\s+/gi, '@').replace(/\s+/g, '');
-            if (!domain.startsWith('@')) domain = '@' + domain;
-            // Clean the existing email and append domain
-            let cleanedEmail = memory.email_spelled.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-            memory.email_spelled = cleanedEmail + domain;
-            console.log(`[${callSid}] Domain appended, email is now: ${memory.email_spelled}`);
-            // Stay in confirm to verify the complete email
+          // Check if user provided a complete correction with @ symbol
+          const corrected = extractEmail(userSpeech);
+          if (corrected && corrected.includes('@')) {
+            memory.email_spelled = corrected;
+            console.log(`[${callSid}] Email corrected to: ${corrected}`);
+            // Stay in confirm state to read back the corrected email
           } else {
-            // Check if user provided a complete correction
-            const corrected = extractEmail(userSpeech);
-            if (corrected && corrected.includes('@')) {
-              memory.email_spelled = corrected;
-              console.log(`[${callSid}] Email corrected to: ${corrected}`);
-              // Stay in confirm state to read back the corrected email
-            } else if (additionalLetters && !corrected) {
-              // User is spelling more letters - append to existing
-              let additionalChars = userSpeech.replace(/\s+/g, '').toLowerCase();
-              memory.email_spelled = (memory.email_spelled || '') + additionalChars;
-              console.log(`[${callSid}] Additional characters appended: ${additionalChars}`);
-              // Stay in confirm state
+            // Check for domain being added
+            const domainPattern = /(@?)(gmail|yahoo|hotmail|outlook|aol|icloud|msn|live|comcast|verizon|att|mail|proton)\s*(\.|\s*dot\s*)\s*(com|net|org)/i;
+            if (domainPattern.test(lowerSpeech)) {
+              let domain = lowerSpeech.replace(/\s+dot\s+/gi, '.').replace(/\s+at\s+/gi, '@').replace(/\s+/g, '');
+              if (!domain.startsWith('@')) domain = '@' + domain;
+              let cleanedEmail = memory.email_spelled.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+              memory.email_spelled = cleanedEmail + domain;
+              console.log(`[${callSid}] Domain appended, email is now: ${memory.email_spelled}`);
             } else {
-              // Truly unclear - ask again instead of assuming
+              // Unclear - just ask again (don't append random words)
               console.log(`[${callSid}] Unclear email response, asking again`);
-              // Stay in appointment_email_confirm state, will re-read back
+              // Stay in appointment_email_confirm state
             }
           }
         }
@@ -1369,33 +1359,29 @@ app.post('/voice', async (req, res) => {
           memory.email_retry = 0;
           memory.flow_state = 'message_email';
           console.log(`[${callSid}] Message email incorrect, restarting collection`);
-        } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct|^good|^great|^ok\b|^okay|sounds good|that's good|perfect|all good|absolutely|definitely/i.test(lowerSpeech)) {
+        } else if (/\b(yes|yeah|yep|yup|correct|right|good|great|ok|okay|perfect|fine|sure|absolutely|definitely)\b|that's right|that is correct|that's correct|sounds good|that's good|all good|that works/i.test(lowerSpeech)) {
           // Email confirmed - proceed to reason for call
           memory.email = memory.email_spelled;
           memory.flow_state = 'message_content';
           console.log(`[${callSid}] Message email confirmed: ${memory.email}`);
         } else {
           // Check if user is providing ADDITIONAL email content (like "gmail.com" or "@gmail.com")
-          const domainPattern = /(@?)(gmail|yahoo|hotmail|outlook|aol|icloud|msn|live|comcast|verizon|att|mail|proton)\s*(\.|\s*dot\s*)\s*(com|net|org)/i;
-          const additionalLetters = /^[a-z\s@\.]+$/i.test(userSpeech.trim()) && userSpeech.trim().length > 1;
-
-          if (domainPattern.test(lowerSpeech)) {
-            // User is providing domain - append to existing email
-            let domain = lowerSpeech.replace(/\s+dot\s+/gi, '.').replace(/\s+at\s+/gi, '@').replace(/\s+/g, '');
-            if (!domain.startsWith('@')) domain = '@' + domain;
-            let cleanedEmail = memory.email_spelled.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-            memory.email_spelled = cleanedEmail + domain;
-            console.log(`[${callSid}] Message domain appended, email is now: ${memory.email_spelled}`);
+          // Check if user provided a complete correction with @ symbol
+          const corrected = extractEmail(userSpeech);
+          if (corrected && corrected.includes('@')) {
+            memory.email_spelled = corrected;
+            console.log(`[${callSid}] Message email corrected to: ${corrected}`);
           } else {
-            const corrected = extractEmail(userSpeech);
-            if (corrected && corrected.includes('@')) {
-              memory.email_spelled = corrected;
-              console.log(`[${callSid}] Message email corrected to: ${corrected}`);
-            } else if (additionalLetters && !corrected) {
-              let additionalChars = userSpeech.replace(/\s+/g, '').toLowerCase();
-              memory.email_spelled = (memory.email_spelled || '') + additionalChars;
-              console.log(`[${callSid}] Message additional characters appended: ${additionalChars}`);
+            // Check for domain being added
+            const domainPattern = /(@?)(gmail|yahoo|hotmail|outlook|aol|icloud|msn|live|comcast|verizon|att|mail|proton)\s*(\.|\s*dot\s*)\s*(com|net|org)/i;
+            if (domainPattern.test(lowerSpeech)) {
+              let domain = lowerSpeech.replace(/\s+dot\s+/gi, '.').replace(/\s+at\s+/gi, '@').replace(/\s+/g, '');
+              if (!domain.startsWith('@')) domain = '@' + domain;
+              let cleanedEmail = memory.email_spelled.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+              memory.email_spelled = cleanedEmail + domain;
+              console.log(`[${callSid}] Message domain appended, email is now: ${memory.email_spelled}`);
             } else {
+              // Unclear - just ask again (don't append random words)
               console.log(`[${callSid}] Unclear message email response, asking again`);
             }
           }
