@@ -1473,7 +1473,7 @@ app.post('/voice', async (req, res) => {
         'message_email_confirm': `Let me read that back. ${spellEmailForSpeech(memory.email_spelled)}. Is that correct?`,
         'message_content': "What is the reason for your call?",
         'message_confirm': `Let me confirm your information. ... Your name is ${memory.first_name || ''} ${memory.last_name || ''}. ... Phone number: ${formatPhoneForSpeech(memory.phone)}. ... Email: ${spellEmailForSpeech(memory.email || memory.email_spelled)}. ... Is all of that correct?`,
-        'message_complete': "Thank you. Your message has been received. Someone will call you back during business hours. Thank you for calling Ahad and Co. We're here to help. Goodbye.",
+        'message_complete': "Thank you. Your message has been received. Someone will call you back during business hours. Thanks for calling Ahad and Co. Goodbye!",
         'appointment_first_name': memory.first_name_retry > 0
           ? "I just need your first name. What is your first name?"
           : "Great! Let me collect your information. May I have your first name, please?",
@@ -1490,7 +1490,7 @@ app.post('/voice', async (req, res) => {
         'appointment_call_reason': "What is the reason for your call?",
         'appointment_welcome_back': "Welcome back! What is the reason for your call?",
         'appointment_confirm': `Let me confirm your information. ... Your name is ${memory.first_name || ''} ${memory.last_name || ''}. ... Phone number: ${formatPhoneForSpeech(memory.phone)}. ... Email: ${spellEmailForSpeech(memory.email || memory.email_spelled)}. ... Your appointment is scheduled for ${memory.selected_slot || ''}. ... Is all of that correct?`,
-        'appointment_complete': `Your appointment is booked for ${memory.selected_slot || ''}. You will receive a confirmation email and text message. Thank you for calling Ahad and Co. Goodbye.`,
+        'appointment_complete': `Your appointment is booked for ${memory.selected_slot || ''}. You will receive a confirmation email and text message. Thanks for calling Ahad and Co. Goodbye!`,
         'offer_slots': memory.offered_slots && memory.offered_slots.length > 0
           ? `I found the earliest available slot on ${memory.offered_slots[0].displayText}. Is that suitable for you?`
           : "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?",
