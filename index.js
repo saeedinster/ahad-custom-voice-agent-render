@@ -1058,25 +1058,33 @@ app.post('/voice', async (req, res) => {
       }
 
       else if (memory.flow_state === 'appointment_email') {
-        // Capture email from user - REQUIRE valid extraction
+        // Capture email from user - be LENIENT, proceed to confirmation if anything usable
         const extracted = extractEmail(userSpeech);
 
-        if (extracted && extracted.length > 0 && extracted.includes('@')) {
-          // Valid email extracted - proceed to confirmation
+        if (extracted && extracted.length > 0) {
+          // Got something - proceed to confirmation (with or without @)
           memory.email_spelled = extracted;
           memory.flow_state = 'appointment_email_confirm';
           memory.email_retry = 0;
           console.log(`[${callSid}] Appointment email captured: ${memory.email_spelled}`);
-        } else if (extracted && extracted.length > 0) {
-          // Partial email (no @) - might be just username, keep collecting
-          memory.email_spelled = extracted;
+        } else if (/\b(at|@)\b/i.test(userSpeech) || /gmail|yahoo|hotmail|outlook/i.test(userSpeech)) {
+          // Contains email keywords - use cleaned speech as fallback
+          const cleaned = userSpeech.toLowerCase()
+            .replace(/\s+at\s+/gi, '@').replace(/\bat\b/gi, '@')
+            .replace(/\s+dot\s+/gi, '.').replace(/\bdot\b/gi, '.')
+            .replace(/\s+/g, '');
+          memory.email_spelled = cleaned;
           memory.flow_state = 'appointment_email_confirm';
-          console.log(`[${callSid}] Partial email captured (no @): ${memory.email_spelled}`);
+          console.log(`[${callSid}] Email from keywords fallback: ${memory.email_spelled}`);
+        } else if (userSpeech.trim().length > 3) {
+          // Got some speech - use it and let confirmation handle it
+          memory.email_spelled = userSpeech.toLowerCase().replace(/\s+/g, '');
+          memory.flow_state = 'appointment_email_confirm';
+          console.log(`[${callSid}] Email from raw speech: ${memory.email_spelled}`);
         } else {
-          // Failed extraction - DON'T use raw speech, ask again
+          // Too short - ask again
           memory.email_retry = (memory.email_retry || 0) + 1;
-          console.log(`[${callSid}] Email extraction failed, asking again (retry ${memory.email_retry})`);
-          // Stay in appointment_email state
+          console.log(`[${callSid}] Email too short, asking again (retry ${memory.email_retry})`);
         }
       }
 
@@ -1319,25 +1327,33 @@ app.post('/voice', async (req, res) => {
           memory.flow_state = 'calendar_check';
           memory.calendar_check_announced = true;
         } else {
-          // Capture email from user - REQUIRE valid extraction
+          // Capture email from user - be LENIENT, proceed to confirmation if anything usable
           const extracted = extractEmail(userSpeech);
 
-          if (extracted && extracted.length > 0 && extracted.includes('@')) {
-            // Valid email extracted - proceed to confirmation
+          if (extracted && extracted.length > 0) {
+            // Got something - proceed to confirmation (with or without @)
             memory.email_spelled = extracted;
             memory.flow_state = 'message_email_confirm';
             memory.email_retry = 0;
             console.log(`[${callSid}] Message email captured: ${memory.email_spelled}`);
-          } else if (extracted && extracted.length > 0) {
-            // Partial email (no @) - might be just username, keep collecting
-            memory.email_spelled = extracted;
+          } else if (/\b(at|@)\b/i.test(userSpeech) || /gmail|yahoo|hotmail|outlook/i.test(userSpeech)) {
+            // Contains email keywords - use cleaned speech as fallback
+            const cleaned = userSpeech.toLowerCase()
+              .replace(/\s+at\s+/gi, '@').replace(/\bat\b/gi, '@')
+              .replace(/\s+dot\s+/gi, '.').replace(/\bdot\b/gi, '.')
+              .replace(/\s+/g, '');
+            memory.email_spelled = cleaned;
             memory.flow_state = 'message_email_confirm';
-            console.log(`[${callSid}] Partial message email captured (no @): ${memory.email_spelled}`);
+            console.log(`[${callSid}] Message email from keywords fallback: ${memory.email_spelled}`);
+          } else if (userSpeech.trim().length > 3) {
+            // Got some speech - use it and let confirmation handle it
+            memory.email_spelled = userSpeech.toLowerCase().replace(/\s+/g, '');
+            memory.flow_state = 'message_email_confirm';
+            console.log(`[${callSid}] Message email from raw speech: ${memory.email_spelled}`);
           } else {
-            // Failed extraction - DON'T use raw speech, ask again
+            // Too short - ask again
             memory.email_retry = (memory.email_retry || 0) + 1;
-            console.log(`[${callSid}] Message email extraction failed, asking again (retry ${memory.email_retry})`);
-            // Stay in message_email state
+            console.log(`[${callSid}] Message email too short, asking again (retry ${memory.email_retry})`);
           }
         }
       }
