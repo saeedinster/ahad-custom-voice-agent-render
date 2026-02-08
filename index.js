@@ -271,9 +271,27 @@ function extractName(speech) {
   // Take only the first 3 words max (to handle "John Michael Smith" but not long sentences)
   // Only apply this if NOT spelled out (spelled names are already joined)
   const finalWords = name.split(' ');
-  if (finalWords.length > 3) {
-    name = finalWords.slice(0, 3).join(' ');
-    console.log(`Name truncated to first 3 words: "${name}"`);
+
+  // CRITICAL: Remove duplicate words (user might repeat their name)
+  // "Nadia Nadia Test" → "Nadia Test"
+  const uniqueWords = [];
+  for (const word of finalWords) {
+    const lowerWord = word.toLowerCase();
+    // Only add if not already present (case-insensitive)
+    if (!uniqueWords.some(w => w.toLowerCase() === lowerWord)) {
+      uniqueWords.push(word);
+    }
+  }
+  if (uniqueWords.length < finalWords.length) {
+    console.log(`Removed duplicate words: "${finalWords.join(' ')}" → "${uniqueWords.join(' ')}"`);
+  }
+
+  // Now limit to first 2 words max (first name + middle/last, not more)
+  if (uniqueWords.length > 2) {
+    name = uniqueWords.slice(0, 2).join(' ');
+    console.log(`Name truncated to first 2 words: "${name}"`);
+  } else {
+    name = uniqueWords.join(' ');
   }
 
   // If name is too short (less than 1 character), reject
@@ -1017,7 +1035,9 @@ app.post('/voice', async (req, res) => {
       else if (memory.flow_state === 'appointment_first_name') {
         const extracted = extractName(userSpeech);
         if (extracted && extracted.length > 0) {
-          memory.first_name = extracted;
+          // CRITICAL: Only take the FIRST word for first name
+          const firstWord = extracted.split(' ')[0];
+          memory.first_name = firstWord;
           memory.flow_state = 'appointment_last_name';
           memory.first_name_retry = 0; // Reset counter
           console.log(`[${callSid}] Appointment first_name recorded: ${memory.first_name}`);
@@ -1194,7 +1214,8 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] Appointment details incorrect, restarting collection`);
         } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct|all good|sounds good|perfect|great|awesome|good|ok|okay|sure|absolutely|definitely/i.test(lowerSpeech)) {
           memory.flow_state = 'appointment_complete';
-          console.log(`[${callSid}] Appointment confirmed, completing`);
+          memory.conversation_ended = true;  // CRITICAL: Mark call as ending NOW
+          console.log(`[${callSid}] Appointment confirmed, completing - call will end`);
         } else {
           // Unclear - ask again instead of assuming
           console.log(`[${callSid}] Unclear response, asking for confirmation again`);
@@ -1231,7 +1252,9 @@ app.post('/voice', async (req, res) => {
           // For message flow: collect first name, then ask for last name (per spec)
           const extracted = extractName(userSpeech);
           if (extracted && extracted.length > 0) {
-            memory.first_name = extracted;
+            // CRITICAL: Only take the FIRST word for first name
+            const firstWord = extracted.split(' ')[0];
+            memory.first_name = firstWord;
             memory.first_name_retry = 0;
             memory.flow_state = 'message_last_name';
             console.log(`[${callSid}] Message first_name recorded: ${memory.first_name}`);
@@ -1418,7 +1441,8 @@ app.post('/voice', async (req, res) => {
           console.log(`[${callSid}] Message details incorrect, restarting collection`);
         } else if (/^yes|^yeah|^yep|^correct|^right|that's right|that is correct|that's correct|all good|sounds good|perfect|great|awesome|good|ok|okay|sure|absolutely|definitely/i.test(lowerSpeech)) {
           memory.flow_state = 'message_complete';
-          console.log(`[${callSid}] Message confirmed, completing`);
+          memory.conversation_ended = true;  // CRITICAL: Mark call as ending NOW
+          console.log(`[${callSid}] Message confirmed, completing - call will end`);
         } else {
           // Unclear - ask again instead of assuming
           console.log(`[${callSid}] Unclear response, asking for confirmation again`);
@@ -1464,7 +1488,7 @@ app.post('/voice', async (req, res) => {
         'appointment_call_reason': "What is the reason for your call?",
         'appointment_welcome_back': "Welcome back! What is the reason for your call?",
         'appointment_confirm': `Let me confirm your information. ... Your name is ${memory.first_name || ''} ${memory.last_name || ''}. ... Phone number: ${formatPhoneForSpeech(memory.phone)}. ... Email: ${spellEmailForSpeech(memory.email || memory.email_spelled)}. ... Your appointment is scheduled for ${memory.selected_slot || ''}. ... Is all of that correct?`,
-        'appointment_complete': `Your appointment is confirmed for ${memory.selected_slot || ''}. A confirmation will be sent to your email and a text to your phone. Thank you for calling Ahad and Co. We're here to help. Goodbye.`,
+        'appointment_complete': `Your appointment is booked for ${memory.selected_slot || ''}. You will receive a confirmation email and text message. Thank you for calling Ahad and Co. Goodbye.`,
         'offer_slots': memory.offered_slots && memory.offered_slots.length > 0
           ? `I found the earliest available slot on ${memory.offered_slots[0].displayText}. Is that suitable for you?`
           : "I don't have any available slots right now. Would you like to leave a message so someone can call you back during business hours?",
